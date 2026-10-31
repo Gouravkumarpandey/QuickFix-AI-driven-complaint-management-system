@@ -1,3 +1,4 @@
+import { notificationDefaults } from '../services/notificationPreferences.js';
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -16,6 +17,7 @@ const userSchema = new mongoose.Schema(
       language: { type: String, default: 'en' },
       timezone: { type: String, default: 'UTC' }
     },
+    notificationPreferences: Object.fromEntries(Object.entries(notificationDefaults).map(([channel, events]) => [channel, Object.fromEntries(Object.entries(events).map(([event, value]) => [event, { type: Boolean, default: value }]))])),
     username: { 
       type: String, 
       unique: true, 
@@ -77,6 +79,8 @@ const userSchema = new mongoose.Schema(
       orderId: String,
       paymentId: String,
       amount: Number,
+      refundedAmount: { type: Number, default: 0 },
+      expiresAt: Date,
       currency: String,
       status: String,
       planType: String,

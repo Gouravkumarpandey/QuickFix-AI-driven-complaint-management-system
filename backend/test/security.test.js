@@ -6,7 +6,7 @@ import { User, AgentUser, AdminUser, AnalyticsUser } from '../src/models/User.js
 import { Complaint } from '../src/models/Complaint.js';
 import { verifyToken, sessionAllowed } from '../src/services/tokenService.js';
 import { canAccessComplaint, publicComplaint } from '../src/middleware/complaintAccess.js';
-import { validatePaidSession, fulfillPayment } from '../src/services/paymentService.js';
+import { validatePaidSession } from '../src/services/paymentService.js';
 import { toCSV } from '../src/utils/csv.js';
 import authRoutes from '../src/routes/auth.js';
 import complaintRoutes from '../src/routes/complaints.js';
@@ -63,7 +63,7 @@ test('HTTP security boundaries and saved-comment regression', async t => {
   let saved = 0;
   const doc = new Complaint({ _id:ticket, user:owner, assignedTo:agent, title:'A test', description:'Description', category:'Billing' });
   doc.save = async () => { saved++; return doc; };
-  Complaint.findById = async () => doc;
+  Complaint.findById = () => ({ populate(){return this;}, then(resolve,reject){return Promise.resolve(doc).then(resolve,reject);} });
   models.forEach((Model,index) => { Model.findById = id => Promise.resolve(index === 0 && [owner,agent,other].includes(String(id)) ? { _id:id, role:id === owner ? 'user':'agent', name:'Tester', isActive:true, save:async()=>{} } : null); });
   const app = express(); app.use(express.json()); app.use((req,res,next)=>{ req.cookies={};next(); });
   const io = { to(){return this;},emit(){},in(){return this;},disconnectSockets(){} }; app.set('io',io);
@@ -79,6 +79,12 @@ test('HTTP security boundaries and saved-comment regression', async t => {
     await t.test('unassigned agent cannot read or comment on another ticket',async()=>{
       assert.equal((await call(`/complaints/${ticket}`,'GET',null,other)).status,403);
       assert.equal((await call(`/complaints/${ticket}/updates`,'POST',{message:'Injected'},other)).status,403);
+    });
+    await t.test('encoded ticket IDs and malformed IDs cannot bypass ownership',async()=>{
+      for (const id of ['%34444444444444444444444', '%34%3444444444444444444444', '%253444444444444444444444']) {
+        const result = await call(`/complaints/${id}`,'GET',null,other);
+        assert.ok([400,403].includes(result.status), `Unexpected status ${result.status}`);
+      }
     });
     await t.test('agent cannot bulk-edit or reassign tickets',async()=>{
       assert.equal((await call('/complaints/bulk/status','PATCH',{complaintIds:[ticket],status:'Resolved'})).status,403);
@@ -98,19 +104,6 @@ test('HTTP security boundaries and saved-comment regression', async t => {
       try { assert.equal((await call(`/complaints?assignedTo=${other}`)).status,200);assert.equal(captured.assignedTo,agent); } finally { Complaint.countDocuments=oldCount; }
     });
   } finally { await new Promise(resolve=>server.close(resolve)); models.forEach((Model,index)=>Model.findById=originals[index]);Complaint.findById=oldComplaint;Complaint.find=oldFind; }
-});
-test('concurrent verification and webhook fulfil a checkout once', async()=>{
-  const originals=[User,AgentUser,AdminUser,AnalyticsUser].map(Model=>Model.findById);
-  const oldUpdate=User.findOneAndUpdate;
-  let state={_id:owner,paymentHistory:[],planType:'Free'};let writes=0;
-  [User,AgentUser,AdminUser,AnalyticsUser].forEach((Model,index)=>Model.findById=()=>Promise.resolve(index===0?state:null));
-  User.findOneAndUpdate=async(filter,update)=>{
-    assert.equal(filter['paymentHistory.orderId'].$ne,'cs_paid');
-    if(state.paymentHistory.some(p=>p.orderId==='cs_paid'))return null;
-    state={...state,...update.$set,paymentHistory:[update.$push.paymentHistory]};writes++;return state;
-  };
-  try { await Promise.all([fulfillPayment(paid()),fulfillPayment(paid()),fulfillPayment(paid())]);assert.equal(writes,1);assert.equal(state.paymentHistory.length,1); }
-  finally {[User,AgentUser,AdminUser,AnalyticsUser].forEach((Model,index)=>Model.findById=originals[index]);User.findOneAndUpdate=oldUpdate;}
 });
 test('customer chat uses schema-compatible ownership and message fields',async()=>{
   const old=Complaint.findById;

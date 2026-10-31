@@ -1,17 +1,6 @@
-import { fulfillPayment } from '../services/paymentService.js';
-import Stripe from 'stripe';
+import { processCheckout, processRefund, validatePaidSession } from '../services/paymentService.js';
+import { stripe } from '../services/stripeClient.js';
 import { User } from '../models/User.js';
-
-// Initialize Stripe instance only if API key is available
-let stripe = null;
-if (process.env.STRIPE_SECRET_KEY) {
-  stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-    apiVersion: '2024-11-20.acacia',
-  });
-  console.log('✅ Stripe payment service initialized');
-} else {
-  console.warn('⚠️  STRIPE_SECRET_KEY not set. Payment features will be disabled.');
-}
 
 /**
  * Get Stripe publishable key for frontend
@@ -147,9 +136,7 @@ export const verifyPayment = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const planType = session.metadata.planType;
-
-    const fulfilledUser = await fulfillPayment(session);
+    const fulfilledUser = await processCheckout(stripe, session);
     user.planType = fulfilledUser.planType;
     user.planExpiresAt = fulfilledUser.planExpiresAt;
 
@@ -234,7 +221,7 @@ export const webhookHandler = async (req, res) => {
 
         // Update user plan if not already updated
         if (session.payment_status === 'paid') {
-          await fulfillPayment(session);
+          await processCheckout(stripe, session);
         }
         break;
 
@@ -245,7 +232,7 @@ export const webhookHandler = async (req, res) => {
 
       case 'charge.refunded':
         const charge = event.data.object;
-        console.log('Charge refunded:', charge.id);
+        await processRefund(stripe, charge);
         break;
 
       default:
@@ -280,17 +267,27 @@ export const refundPayment = async (req, res) => {
     }
 
     const { paymentIntentId, amount } = req.body;
+    if (amount !== undefined && (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0 || !Number.isSafeInteger(Math.round(amount * 100)) || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-6)) return res.status(400).json({ message: 'Invalid refund amount' });
 
     if (!paymentIntentId) {
       return res.status(400).json({ message: 'Payment Intent ID is required' });
     }
 
+    const idempotencyKey = req.get('Idempotency-Key');
+    if (!idempotencyKey || !/^[a-zA-Z0-9_-]{8,128}$/.test(idempotencyKey)) return res.status(400).json({ message: 'Provide a unique Idempotency-Key (8–128 letters, numbers, underscores or hyphens); reuse it when retrying the same refund' });
+    const sessions = await stripe.checkout.sessions.list({ payment_intent: paymentIntentId, limit: 100 });
+    const owned = sessions.data.find(session => session.metadata?.planType && session.client_reference_id);
+    if (!owned) return res.status(404).json({ message: 'QuickFix payment not found' });
+    validatePaidSession(owned);
+
     // Create refund
     const refund = await stripe.refunds.create({
       payment_intent: paymentIntentId,
-      amount: amount ? amount * 100 : undefined, // Convert to cents if amount provided (partial refund)
-    });
+      amount: amount !== undefined ? Math.round(amount * 100) : undefined,
+    }, { idempotencyKey: `quickfix-refund-${req.user._id}-${idempotencyKey}` });
 
+    const intent = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ['latest_charge'] });
+    if (intent.latest_charge && typeof intent.latest_charge === 'object') await processRefund(stripe, intent.latest_charge);
     res.json({
       success: true,
       message: 'Refund initiated successfully',

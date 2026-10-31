@@ -165,11 +165,11 @@ export const subscriptionService = {
     /**
      * Refund payment (admin only)
      */
-    refundPayment: async (paymentIntentId: string, amount?: number): Promise<RefundResponse> => {
+    refundPayment: async (paymentIntentId: string, amount?: number, idempotencyKey: string = crypto.randomUUID()): Promise<RefundResponse> => {
       const response = await api.post('/payments/refund', {
         paymentIntentId,
         amount,
-      });
+      }, { headers: { 'Idempotency-Key': idempotencyKey } });
       return response.data;
     },
   },

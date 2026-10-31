@@ -1,3 +1,4 @@
+import { getNotificationPreferences, patchNotificationPreferences } from '../services/notificationPreferences.js';
 import express from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
@@ -152,57 +153,14 @@ router.get('/stats', authenticate, asyncHandler(async (req, res) => {
   res.json(stats[0] || { total: 0, unread: 0, readRate: 0 });
 }));
 
-// Get notification preferences
+// Granular preferences merge partial updates; omitted events retain their saved values.
 router.get('/preferences', authenticate, asyncHandler(async (req, res) => {
-  // Return user notification preferences from user model
-  const preferences = req.user.notificationPreferences || {
-    email: {
-      complaintAssigned: true,
-      complaintUpdated: true,
-      complaintResolved: true,
-      slaBreaches: true,
-      escalations: true,
-      newComments: true
-    },
-    push: {
-      complaintAssigned: true,
-      complaintUpdated: true,
-      complaintResolved: true,
-      slaBreaches: true,
-      escalations: true,
-      newComments: false
-    },
-    sms: {
-      complaintAssigned: false,
-      complaintUpdated: false,
-      complaintResolved: false,
-      slaBreaches: true,
-      escalations: true,
-      newComments: false
-    }
-  };
-
-  res.json(preferences);
+  res.json(getNotificationPreferences(req.user));
 }));
-
-// Update notification preferences
 router.patch('/preferences', authenticate, asyncHandler(async (req, res) => {
-  const { email, push, sms } = req.body;
-  
-  const updatedPreferences = {
-    email: email || {},
-    push: push || {},
-    sms: sms || {}
-  };
-  
-  // Update user's notification preferences
-  req.user.notificationPreferences = updatedPreferences;
+  patchNotificationPreferences(req.user, req.body);
   await req.user.save();
-
-  res.json({ 
-    message: 'Notification preferences updated successfully',
-    preferences: updatedPreferences 
-  });
+  res.json({ message: 'Notification preferences updated successfully', preferences: getNotificationPreferences(req.user) });
 }));
 
 export default router;

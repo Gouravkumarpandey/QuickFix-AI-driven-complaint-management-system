@@ -1,3 +1,6 @@
+import { randomInt } from 'node:crypto';
+import { findUserByEmail } from '../models/User.js';
+import { notificationAllowed } from './notificationPreferences.js';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 
@@ -62,14 +65,8 @@ export const sendOtpEmail = async (to, name, otp) => {
  * @returns {string} - Generated OTP
  */
 export const generateOTP = (length = 6) => {
-  const digits = '0123456789';
-  let OTP = '';
-
-  for (let i = 0; i < length; i++) {
-    OTP += digits[Math.floor(Math.random() * 10)];
-  }
-
-  return OTP;
+  if (!Number.isInteger(length) || length < 4 || length > 8) throw new Error('OTP length must be 4–8 digits');
+  return String(randomInt(10 ** length)).padStart(length, '0');
 };
 
 /**
@@ -123,6 +120,8 @@ export const sendPasswordResetEmail = async (to, name, resetToken) => {
  * @returns {Promise} - Nodemailer send mail promise
  */
 export const sendComplaintConfirmationEmail = async (to, name, complaintId, title, description, category, priority) => {
+  const { user } = await findUserByEmail(to);
+  if (user && !notificationAllowed(user, 'email', 'complaintUpdated')) return { skipped: true };
   try {
     console.log(`📧 Attempting to send complaint confirmation email...`);
     console.log(`   To: ${to}`);
@@ -282,6 +281,8 @@ export const sendComplaintConfirmationEmail = async (to, name, complaintId, titl
  * @returns {Promise} - Nodemailer send mail promise
  */
 export const sendComplaintResolvedEmail = async (to, name, complaintId, title) => {
+  const { user } = await findUserByEmail(to);
+  if (user && !notificationAllowed(user, 'email', 'complaintResolved')) return { skipped: true };
   try {
     console.log(`📧 Attempting to send complaint resolution email...`);
     console.log(`   To: ${to}`);

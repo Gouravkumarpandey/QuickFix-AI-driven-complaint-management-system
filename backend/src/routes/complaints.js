@@ -1,5 +1,6 @@
+import { emitComplaintEvent } from '../services/complaintEvents.js';
 import { getSettings } from '../services/settingsService.js';
-import { complaintAccess } from '../middleware/complaintAccess.js';
+import { complaintAccess, authorizeComplaint } from '../middleware/complaintAccess.js';
 import express from 'express';
 import { Complaint } from '../models/Complaint.js';
 import { User, findUserById } from '../models/User.js';
@@ -14,7 +15,8 @@ import { triggerComplaintCreatedSMS, triggerComplaintResolvedSMS } from '../serv
 // import { invalidateComplaintCache } from '../services/cacheService.js';
 
 const router = express.Router();
-router.use(authenticate, complaintAccess);
+router.use(authenticate, authorize('user', 'agent', 'admin'), complaintAccess);
+router.param('id', authorizeComplaint);
 
 // Get all complaints for the logged-in user (user's complaint history)
 router.get('/my-complaints', authenticate, asyncHandler(async (req, res) => {
@@ -483,6 +485,38 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
   res.status(201).json(updatedComplaint);
 }));
 
+// Static bulk routes must precede /:id/status and /:id/assign.
+async function bulkComplaints(req, res, kind) {
+  const { complaintIds, assignedTo, status, message } = req.body;
+  if (!Array.isArray(complaintIds) || !complaintIds.length || complaintIds.length > 100 || complaintIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{24}$/i.test(id))) return res.status(400).json({ error: 'Provide 1–100 valid complaint IDs' });
+  if (message !== undefined && (typeof message !== 'string' || message.length > 2000)) return res.status(400).json({ error: 'Invalid audit message' });
+  const ids = [...new Set(complaintIds)];
+  const tickets = await Complaint.find({ _id: { $in: ids } });
+  if (tickets.length !== ids.length) return res.status(404).json({ error: 'One or more complaints were not found' });
+  let changes;
+  if (kind === 'assignment') {
+    if (typeof assignedTo !== 'string' || !/^[a-f0-9]{24}$/i.test(assignedTo)) return res.status(400).json({ error: 'Valid agent ID required' });
+    const { user: agent } = await findUserById(assignedTo);
+    if (!agent || agent.role !== 'agent' || agent.isActive === false) return res.status(400).json({ error: 'Invalid agent' });
+    changes = { assignedTo, status: 'In Progress' };
+  } else {
+    if (!['Open','In Progress','Under Review','Resolved','Closed','Escalated'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    changes = { status, ...(status === 'Resolved' ? { 'resolution.resolvedAt': new Date(), 'resolution.resolvedBy': req.user._id, 'resolution.description': message || 'Resolved by administrator' } : {}) };
+  }
+  const result = await Complaint.updateMany({ _id: { $in: ids } }, {
+    $set: changes,
+    $push: { updates: { message: message || (kind === 'assignment' ? 'Assigned by administrator' : `Status changed to ${status}`), updatedBy: req.user._id, updateType: kind === 'assignment' ? 'assignment' : 'status_change', isInternal: false, createdAt: new Date() } }
+  }, { runValidators: true });
+  const { refreshAgentAvailability } = await import('../services/agentService.js');
+  const agents = [...new Set([...tickets.map(ticket => ticket.assignedTo?.toString()), assignedTo].filter(Boolean))];
+  await Promise.all(agents.map(id => refreshAgentAvailability(id)));
+  const updated = await Complaint.find({ _id: { $in: ids } });
+  for (const complaint of updated) emitComplaintEvent(req.app.get('io'), complaint, 'complaintUpdated', { complaint });
+  res.json({ message: 'Complaints updated successfully', modifiedCount: result.modifiedCount });
+}
+router.patch('/bulk/assign', authenticate, authorize('admin'), asyncHandler((req, res) => bulkComplaints(req, res, 'assignment')));
+router.patch('/bulk/status', authenticate, authorize('admin'), asyncHandler((req, res) => bulkComplaints(req, res, 'status')));
+
 // Update complaint status
 router.patch('/:id/status', authenticate, authorize('agent', 'admin'), asyncHandler(async (req, res) => {
   const { status, message } = req.body;
@@ -860,11 +894,11 @@ router.post('/:id/updates', authenticate, asyncHandler(async (req, res) => {
 
   // Emit socket event
   const io = req.app.get('io');
-  io.to(`user:${complaint.user}`).to(`agent:${complaint.assignedTo}`).to('admin').emit('complaintCommentAdded', {
+  emitComplaintEvent(io, complaint, 'complaintCommentAdded', {
     complaintId: complaint._id,
     update: complaint.updates[complaint.updates.length - 1],
     addedBy: req.user._id
-  });
+  }, isInternal);
 
   res.json(complaint);
 }));
@@ -912,7 +946,7 @@ router.patch('/:id/escalate', authenticate, authorize('agent', 'admin'), asyncHa
 router.post('/:id/feedback', authenticate, asyncHandler(async (req, res) => {
   const { rating, comment } = req.body;
 
-  if (!rating || rating < 1 || rating > 5) {
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5 || (comment !== undefined && (typeof comment !== 'string' || comment.length > 1000))) {
     return res.status(400).json({ error: 'Rating must be between 1 and 5' });
   }
 
@@ -931,99 +965,15 @@ router.post('/:id/feedback', authenticate, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Feedback can only be submitted for resolved or closed complaints' });
   }
 
-  complaint.feedback = {
-    rating,
-    comment: comment || '',
-    submittedAt: new Date(),
-    submittedBy: req.user._id
-  };
+  complaint.customerSatisfaction = { rating, feedback: comment || '', submittedAt: new Date() };
+  complaint.resolution.satisfactionRating = rating;
+  complaint.resolution.feedback = comment || '';
 
-  complaint.metrics.customerSatisfaction = rating;
   complaint.updatedAt = new Date();
 
   await complaint.save();
 
-  res.json({ message: 'Feedback submitted successfully', feedback: complaint.feedback });
-}));
-
-// Bulk operations for admin dashboard
-router.patch('/bulk/assign', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { complaintIds, assignedTo, assignedTeam } = req.body;
-
-  if (!complaintIds || !Array.isArray(complaintIds) || complaintIds.length === 0) {
-    return res.status(400).json({ error: 'Please provide complaint IDs' });
-  }
-
-  const updateData = { updatedAt: new Date() };
-  if (assignedTo) updateData.assignedTo = assignedTo;
-  if (assignedTeam) updateData.assignedTeam = assignedTeam;
-
-  const result = await Complaint.updateMany(
-    { _id: { $in: complaintIds } },
-    updateData
-  );
-
-  // Add updates to each complaint
-  await Promise.all(complaintIds.map(async (id) => {
-    await Complaint.findByIdAndUpdate(id, {
-      $push: {
-        updates: {
-          message: `Complaint bulk assigned to ${assignedTo ? 'agent' : 'team'}`,
-          updatedBy: req.user._id,
-          timestamp: new Date(),
-          updateType: 'assignment',
-          isInternal: false
-        }
-      }
-    });
-  }));
-
-  res.json({
-    message: `${result.modifiedCount} complaints updated successfully`,
-    modifiedCount: result.modifiedCount
-  });
-}));
-
-// Bulk status update
-router.patch('/bulk/status', authenticate, authorize('admin', 'agent'), asyncHandler(async (req, res) => {
-  const { complaintIds, status, message } = req.body;
-
-  if (!complaintIds || !Array.isArray(complaintIds) || complaintIds.length === 0) {
-    return res.status(400).json({ error: 'Please provide complaint IDs' });
-  }
-
-  if (!status) {
-    return res.status(400).json({ error: 'Status is required' });
-  }
-
-  const result = await Complaint.updateMany(
-    { _id: { $in: complaintIds } },
-    {
-      status,
-      updatedAt: new Date(),
-      ...(status === 'Resolved' && { 'resolution.resolvedAt': new Date(), 'resolution.resolvedBy': req.user._id, 'resolution.description': message || 'Resolved by administrator' })
-    }
-  );
-
-  // Add updates to each complaint
-  await Promise.all(complaintIds.map(async (id) => {
-    await Complaint.findByIdAndUpdate(id, {
-      $push: {
-        updates: {
-          message: message || `Status updated to ${status}`,
-          updatedBy: req.user._id,
-          timestamp: new Date(),
-          updateType: 'status_change',
-          isInternal: false
-        }
-      }
-    });
-  }));
-
-  res.json({
-    message: `${result.modifiedCount} complaints updated successfully`,
-    modifiedCount: result.modifiedCount
-  });
+  res.json({ message: 'Feedback submitted successfully', feedback: { rating: complaint.customerSatisfaction.rating, comment: complaint.customerSatisfaction.feedback } });
 }));
 
 // AI-powered auto-assignment endpoint
@@ -1082,7 +1032,7 @@ router.post('/auto-assign', authenticate, authorize('admin'), asyncHandler(async
 router.post('/:id/internal-notes', authenticate, authorize('agent', 'admin'), asyncHandler(async (req, res) => {
   const { note } = req.body;
 
-  if (!note || note.trim().length === 0) {
+  if (typeof note !== 'string' || !note.trim() || note.length > 2000) {
     return res.status(400).json({ error: 'Note content is required' });
   }
 
@@ -1100,7 +1050,7 @@ router.post('/:id/internal-notes', authenticate, authorize('agent', 'admin'), as
     message: note,
     updatedBy: req.user._id,
     timestamp: new Date(),
-    type: 'internal_note',
+    updateType: 'comment',
     isInternal: true
   };
 
