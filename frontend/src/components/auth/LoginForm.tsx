@@ -355,8 +355,6 @@ export function LoginForm() {
                         className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm appearance-none cursor-pointer"
                       >
                         <option value="user">Customer / User</option>
-                        <option value="agent">Support Agent</option>
-                        <option value="analytics">Analytics Manager</option>
                       </select>
                       <ArrowRight className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 rotate-90 pointer-events-none" />
                     </div>
@@ -565,8 +563,6 @@ export function LoginForm() {
                         className="w-full pl-11 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm font-medium appearance-none cursor-pointer"
                       >
                         <option value="user">Customer / User</option>
-                        <option value="agent">Support Agent</option>
-                        <option value="analytics">Analytics Manager</option>
                       </select>
                       <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
                         <ArrowRight className="w-5 h-5 text-gray-400 rotate-90" />

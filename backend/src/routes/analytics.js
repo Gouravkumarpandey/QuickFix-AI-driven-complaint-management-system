@@ -16,6 +16,7 @@ import anthropicService from "../services/anthropicService.js";
 // } from "../middleware/cacheMiddleware.js";
 
 const router = express.Router();
+router.use(authenticate, authorize('admin', 'agent', 'analytics'));
 
 // Simple async handler utility
 const asyncHandler = (fn) => (req, res, next) => {

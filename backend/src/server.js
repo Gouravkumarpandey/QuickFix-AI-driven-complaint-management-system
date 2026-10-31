@@ -41,7 +41,9 @@ import connectDB from "./config/db.js";
 // Redis disabled for now - uncomment to enable caching
 // import { connectRedis, isRedisConnected } from "./config/redis.js";
 import { handleConnection } from "./socket/socketHandlers.js";
-import { User } from "./models/User.js";
+import { User, findUserById } from "./models/User.js";
+import { jwtSecret, verifyToken, sessionAllowed } from "./services/tokenService.js";
+import { webhookHandler } from "./controllers/paymentController.js";
 import { getHelmetCspConfig, cspReportHandler } from "./middleware/cspConfig.js";
 
 // Add global error handlers to prevent silent crashes
@@ -86,6 +88,7 @@ connectDB()
     // In development mode, continue running the server even without DB
   });
 
+jwtSecret(); // Fail closed before accepting traffic.
 const app = express();
 const server = createServer(app);
 
@@ -190,12 +193,12 @@ io.use(async (socket, next) => {
     try {
       // Log token format to help with debugging
       const tokenPreview = `${socketAuthToken.substring(0, 10)}...${socketAuthToken.substring(socketAuthToken.length - 5)}`;
-      console.log(`Processing token: ${tokenPreview} for socket ${socketId}`);
+
 
       // Verify the token
-      const decoded = jwt.verify(socketAuthToken, process.env.JWT_SECRET || 'default-secret-key');
+      const decoded = verifyToken(socketAuthToken);
       console.log('Token decoded successfully for socket:', socketId);
-      console.log('Token payload:', { id: decoded.id, userId: decoded.userId, role: decoded.role });
+
 
       // Extract userId from different possible fields
       const userId = decoded.id || decoded.userId || decoded.sub;
@@ -217,14 +220,14 @@ io.use(async (socket, next) => {
       }
 
       // Look up the user in the database with timeout
-      const userPromise = User.findById(userId).select('-password');
+      const userPromise = findUserById(userId).then(result => result.user);
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Database lookup timeout')), 5000)
       );
 
       const user = await Promise.race([userPromise, timeoutPromise]);
 
-      if (!user) {
+      if (!sessionAllowed(user, decoded)) {
         connectedSockets.delete(socketId);
         console.error('Socket auth failed: User not found', userId, socketId);
         return next(new Error("Authentication failed: User not found"));
@@ -250,6 +253,16 @@ io.use(async (socket, next) => {
 
       // Attach user to socket for later use
       socket.user = user;
+      // Recheck expiry and revocation for every incoming event, including long-lived sockets.
+      socket.use(async (_packet, done) => {
+        try {
+          const claims = verifyToken(socketAuthToken);
+          const { user: current } = await findUserById(claims.id);
+          if (!sessionAllowed(current, claims)) throw new Error('Session revoked');
+          socket.user = current;
+          done();
+        } catch { socket.disconnect(true); done(new Error('Session expired or revoked')); }
+      });
 
       // Setup disconnect handler
       socket.on('disconnect', (reason) => {
@@ -390,6 +403,7 @@ app.use((req, res, next) => {
 
 app.use(morgan("combined"));
 app.use(cookieParser());
+app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), webhookHandler);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -508,8 +522,7 @@ app.use((err, req, res, next) => {
     stack: err.stack,
     requestUrl: req.url,
     requestMethod: req.method,
-    requestHeaders: req.headers,
-    requestBody: req.body
+    // Do not log credentials, cookies, tokens, or customer request bodies.
   });
 
   // Check for specific error types

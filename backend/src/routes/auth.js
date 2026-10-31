@@ -1,3 +1,4 @@
+import rateLimit from 'express-rate-limit';
 import express from "express";
 import {
   registerUser,
@@ -24,11 +25,12 @@ import { validateSession } from "../controllers/sessionController.js";
 import { authenticate } from "../middleware/auth.js";
 
 const router = express.Router();
+router.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false }));
 
 // Normal auth
 router.post("/signup", registerUser);
 router.post("/login", loginUser);
-router.post("/logout", logoutUser);
+router.post("/logout", authenticate, (req, res, next) => logoutUser(req, res).catch(next));
 router.post("/admin-login", adminLogin);
 router.post("/refresh", refreshToken);
 

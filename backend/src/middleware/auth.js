@@ -1,3 +1,4 @@
+import { verifyToken, sessionAllowed } from '../services/tokenService.js';
 import jwt from 'jsonwebtoken';
 import { User, findUserById } from '../models/User.js';
 
@@ -9,7 +10,7 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ error: 'Access denied. No token provided.' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
+    const decoded = verifyToken(token);
 
     // The token might use either 'userId' or 'id' field based on how it was generated
     const userId = decoded.userId || decoded.id;
@@ -20,7 +21,7 @@ const authenticate = async (req, res, next) => {
     // Search for user across all role-specific collections
     const { user } = await findUserById(userId);
 
-    if (!user) {
+    if (!sessionAllowed(user, decoded)) {
       return res.status(401).json({ error: 'Invalid token.' });
     }
 
@@ -56,12 +57,12 @@ const optionalAuth = async (req, res, next) => {
   try {
     const token = req.cookies.token || req.header('Authorization')?.replace('Bearer ', '');
     if (token) {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
+      const decoded = verifyToken(token);
 
       // Search for user across all role-specific collections
       const { user } = await findUserById(decoded.userId || decoded.id);
 
-      if (user && user.isActive !== false) {
+      if (sessionAllowed(user, decoded)) {
         req.user = user;
       }
     }

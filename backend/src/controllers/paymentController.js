@@ -1,3 +1,4 @@
+import { fulfillPayment } from '../services/paymentService.js';
 import Stripe from 'stripe';
 import { User } from '../models/User.js';
 
@@ -148,25 +149,9 @@ export const verifyPayment = async (req, res) => {
 
     const planType = session.metadata.planType;
 
-    // Calculate expiry date (30 days from now)
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + 30);
-
-    user.planType = planType;
-    user.planExpiresAt = expiryDate;
-
-    // Add payment record
-    user.paymentHistory.push({
-      orderId: session.id,
-      paymentId: session.payment_intent,
-      amount: session.amount_total / 100, // Convert from paise to INR
-      currency: session.currency,
-      status: 'success',
-      planType,
-      createdAt: new Date()
-    });
-
-    await user.save();
+    const fulfilledUser = await fulfillPayment(session);
+    user.planType = fulfilledUser.planType;
+    user.planExpiresAt = fulfilledUser.planExpiresAt;
 
     res.json({
       success: true,
@@ -249,30 +234,7 @@ export const webhookHandler = async (req, res) => {
 
         // Update user plan if not already updated
         if (session.payment_status === 'paid') {
-          const userId = session.client_reference_id;
-          const planType = session.metadata.planType;
-
-          const user = await User.findById(userId);
-          if (user && user.planType !== planType) {
-            const expiryDate = new Date();
-            expiryDate.setDate(expiryDate.getDate() + 30);
-
-            user.planType = planType;
-            user.planExpiresAt = expiryDate;
-
-            user.paymentHistory.push({
-              orderId: session.id,
-              paymentId: session.payment_intent,
-              amount: session.amount_total / 100,
-              currency: session.currency,
-              status: 'success',
-              planType,
-              createdAt: new Date()
-            });
-
-            await user.save();
-            console.log('User plan updated via webhook:', userId);
-          }
+          await fulfillPayment(session);
         }
         break;
 

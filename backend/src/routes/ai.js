@@ -1,3 +1,4 @@
+import rateLimit from 'express-rate-limit';
 /**
  * AI API routes
  * Provides endpoints for AI-powered features and chatbot functionality
@@ -9,6 +10,7 @@ import anthropicService from '../services/anthropicService.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
+router.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false }));
 
 const QUICKFIX_KB = `You are a helpful AI assistant for QuickFix, an enterprise-grade AI-powered complaint management system.
 

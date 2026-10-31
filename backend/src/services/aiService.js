@@ -163,7 +163,7 @@ Return valid JSON: {"category": "...", "confidence": 0.XX}`;
   _keywordComplaintClassify(text) {
     const base = this._keywordClassify(text);
     return {
-      category: base.top_label + ' Inquiry',
+      category: ({ Account: 'Account Issues', Billing: 'Billing', Technical: 'Technical Support', General: 'General Inquiry' })[base.top_label] || 'General Inquiry',
       priority: 'Medium',
       sentiment: 'Neutral',
       keywords: [],

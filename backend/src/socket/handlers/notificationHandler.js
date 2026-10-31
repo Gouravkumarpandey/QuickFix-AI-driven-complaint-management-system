@@ -31,7 +31,7 @@ export const sendNotification = (io, notification, targets) => {
     }
   } else {
     // Broadcast to everyone
-    io.emit('notification', { notification });
+    io.to(`user:${notification.user}`).emit('notification', { notification });
   }
 };
 
@@ -52,7 +52,7 @@ export const initNotificationHandler = (io) => {
         }
         
         // Security check - ensure user can only mark their own notifications as read
-        if (notification.recipient.toString() !== socket.user._id.toString()) {
+        if (notification.user.toString() !== socket.user._id.toString()) {
           socket.emit('error', { message: 'Unauthorized' });
           return;
         }
@@ -73,7 +73,7 @@ export const initNotificationHandler = (io) => {
         const userId = socket.user._id;
         
         await Notification.updateMany(
-          { recipient: userId, isRead: false },
+          { user: userId, isRead: false },
           { isRead: true }
         );
         
@@ -89,14 +89,14 @@ export const initNotificationHandler = (io) => {
       try {
         const userId = socket.user._id;
         
-        const notifications = await Notification.find({ recipient: userId })
+        const notifications = await Notification.find({ user: userId })
           .sort({ createdAt: -1 })
           .skip((page - 1) * limit)
           .limit(limit);
         
-        const totalCount = await Notification.countDocuments({ recipient: userId });
+        const totalCount = await Notification.countDocuments({ user: userId });
         const unreadCount = await Notification.countDocuments({ 
-          recipient: userId,
+          user: userId,
           isRead: false 
         });
         

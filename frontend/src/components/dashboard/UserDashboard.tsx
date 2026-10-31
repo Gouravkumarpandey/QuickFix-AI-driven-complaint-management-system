@@ -1,3 +1,4 @@
+import api from '../../utils/api';
 import { useState, useEffect } from 'react';
 // i18n removed
 import {
@@ -64,10 +65,10 @@ export function UserDashboard() {
   const [userProfile, setUserProfile] = useState({
     name: user?.name || 'User',
     email: user?.email || 'user@example.com',
-    phone: '+1 (555) 123-4567',
-    organization: 'ABC Company',
+    phone: '',
+    organization: '',
     role: user?.role || 'user',
-    joinDate: '2024-01-15'
+    joinDate: new Date().toISOString()
   });
 
   // Handle manual refresh of complaints
@@ -149,12 +150,20 @@ export function UserDashboard() {
       setUserProfile({
         name: user.name,
         email: user.email,
-        phone: '+1 (555) 123-4567',
-        organization: 'ABC Company',
+        phone: '',
+        organization: '',
         role: user.role,
-        joinDate: '2024-01-15'
+        joinDate: new Date().toISOString()
       });
     }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    api.get('/users/profile').then(({ data }) => {
+      setUserProfile(previous => ({ ...previous, name: data.name, email: data.email, phone: data.phoneNumber || '', organization: data.organization || '', joinDate: data.createdAt || previous.joinDate }));
+      if (data.preferences) setSettings(previous => ({ ...previous, language: data.preferences.language || previous.language, timezone: data.preferences.timezone || previous.timezone, notifications: { email: data.preferences.emailNotifications !== false, sms: data.preferences.smsNotifications === true, push: data.preferences.pushNotifications !== false } }));
+    }).catch(() => setSaveError('Unable to load saved profile. Please retry.'));
   }, [user]);
 
   // Update filtered complaints when complaints change
@@ -224,13 +233,20 @@ export function UserDashboard() {
         }
       }
 
-      // In a real app, you would make API calls here
-      // For now, we'll simulate a successful save
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Save to localStorage for persistence
+      await api.patch('/users/profile', {
+        name: userProfile.name,
+        ...(userProfile.phone ? { phoneNumber: userProfile.phone } : {}),
+        organization: userProfile.organization,
+        preferences: { emailNotifications: settings.notifications.email, smsNotifications: settings.notifications.sms, pushNotifications: settings.notifications.push, language: settings.language, timezone: settings.timezone }
+      });
+      if (settings.security.newPassword) {
+        await api.patch('/users/password', { currentPassword: settings.security.currentPassword, newPassword: settings.security.newPassword });
+        // Password changes revoke existing sessions. Sign in again with the new password.
+        await logout();
+        return;
+      }
       localStorage.setItem('userProfile', JSON.stringify(userProfile));
-      localStorage.setItem('userSettings', JSON.stringify(settings));
+      localStorage.setItem('userSettings', JSON.stringify({ ...settings, security: { currentPassword: '', newPassword: '', confirmPassword: '' } }));
 
       setSaveSuccess(true);
       setIsSaving(false);

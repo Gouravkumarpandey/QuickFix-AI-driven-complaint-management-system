@@ -142,7 +142,7 @@ export function GoogleRoleSelection({ onRoleSelected, onCancel, userInfo }: Goog
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">Profile Setup</span>
             </h1>
             <p className="text-xl text-gray-400 max-w-md leading-relaxed">
-              Choose your role to customize your QuickFix experience. We'll set up your dashboard instantly.
+              Create your customer account. Staff accounts are provided by your administrator.
             </p>
           </div>
 
@@ -188,7 +188,7 @@ export function GoogleRoleSelection({ onRoleSelected, onCancel, userInfo }: Goog
                 Select Account Type
               </label>
               <div className="grid grid-cols-1 gap-3">
-                {roles.map((role) => {
+                {roles.filter(role => role.id === 'user').map((role) => {
                   const Icon = role.icon;
                   const isSelected = selectedRole === role.id;
 

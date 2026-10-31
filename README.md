@@ -1,4 +1,6 @@
-﻿# Agent Availability Management System
+> Security and setup changes: see [deployment and verification notes](docs/SECURITY_AND_COMPLETION.md). Public signup now creates customers only; use the administrator CLI to bootstrap an admin and the protected API to create staff.
+
+# Agent Availability Management System
 
 ## Overview
 Agent availability is **automatically managed** by the system based on ticket assignment and resolution. Agents **cannot manually** change their availability status.

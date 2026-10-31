@@ -1,5 +1,5 @@
 import express from 'express';
-import { User } from '../models/User.js';
+import { User, getUserModelByRole, findUserByEmail, findUserById } from '../models/User.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { validateUserUpdate, validatePasswordChange } from '../validators/userValidators.js';
@@ -8,43 +8,26 @@ const router = express.Router();
 
 // Get current user profile
 router.get('/profile', authenticate, asyncHandler(async (req, res) => {
-  res.json(req.user);
+  res.json({ id: req.user._id, name: req.user.name, email: req.user.email, role: req.user.role, phoneNumber: req.user.phoneNumber, organization: req.user.organization, preferences: req.user.preferences, createdAt: req.user.createdAt, planType: req.user.planType });
 }));
 
 // Update user profile
 router.patch('/profile', authenticate, asyncHandler(async (req, res) => {
-  const { error } = validateUserUpdate(req.body);
-  if (error) {
-    return res.status(400).json({ error: error.details[0].message });
+  const allowed = ['name','phoneNumber','organization','preferences'];
+  if (!Object.keys(req.body).length || Object.keys(req.body).some(key => !allowed.includes(key))) return res.status(400).json({ error: 'Invalid profile fields' });
+  if (req.body.name !== undefined && (typeof req.body.name !== 'string' || req.body.name.trim().length < 2 || req.body.name.length > 100)) return res.status(400).json({ error: 'Invalid name' });
+  if (req.body.phoneNumber !== undefined && (typeof req.body.phoneNumber !== 'string' || !/^\+[1-9]\d{7,14}$/.test(req.body.phoneNumber))) return res.status(400).json({ error: 'Phone number must use international format' });
+  if (req.body.organization !== undefined && (typeof req.body.organization !== 'string' || req.body.organization.length > 100)) return res.status(400).json({ error: 'Invalid organization' });
+  if (req.body.preferences) {
+    const allowedPreferences = ['emailNotifications','smsNotifications','pushNotifications','language','timezone'];
+    if (typeof req.body.preferences !== 'object' || Array.isArray(req.body.preferences) || Object.entries(req.body.preferences).some(([key,value]) => !allowedPreferences.includes(key) || (key.endsWith('Notifications') ? typeof value !== 'boolean' : typeof value !== 'string' || value.length > 100))) return res.status(400).json({ error: 'Invalid preferences' });
+    req.user.preferences = { ...req.user.preferences?.toObject?.(), ...req.body.preferences };
   }
-
-  const allowedUpdates = ['firstName', 'lastName', 'profile', 'preferences'];
-  const updates = Object.keys(req.body);
-  const isValidOperation = updates.every(update => allowedUpdates.includes(update));
-
-  if (!isValidOperation) {
-    return res.status(400).json({ error: 'Invalid updates' });
-  }
-
-  try {
-    const user = await User.findById(req.user._id);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    updates.forEach(update => {
-      if (update === 'profile' || update === 'preferences') {
-        user[update] = { ...user[update], ...req.body[update] };
-      } else {
-        user[update] = req.body[update];
-      }
-    });
-
-    await user.save();
-    res.json(user);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
+  if (req.body.organization !== undefined) req.user.organization = req.body.organization;
+  if (req.body.name) req.user.name = req.body.name.trim();
+  if (req.body.phoneNumber) req.user.phoneNumber = req.body.phoneNumber;
+  await req.user.save();
+  res.json(req.user);
 }));
 
 // Change password
@@ -56,18 +39,20 @@ router.patch('/password', authenticate, asyncHandler(async (req, res) => {
 
   const { currentPassword, newPassword } = req.body;
 
-  const user = await User.findById(req.user._id);
+  const user = req.user;
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
 
   // Verify current password
-  const isCurrentPasswordValid = await user.comparePassword(currentPassword);
+  const isCurrentPasswordValid = await user.matchPassword(currentPassword);
   if (!isCurrentPasswordValid) {
     return res.status(400).json({ error: 'Current password is incorrect' });
   }
 
   user.password = newPassword;
+  user.tokensValidAfter = Date.now();
+  req.app.get('io')?.in(`user:${user._id}`).disconnectSockets(true);
   await user.save();
 
   res.json({ message: 'Password updated successfully' });
@@ -102,7 +87,7 @@ router.get('/', authenticate, authorize('admin'), asyncHandler(async (req, res) 
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
   const users = await User.find(filter)
-    .select('-password')
+    .select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter')
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(parseInt(limit));
@@ -121,7 +106,7 @@ router.get('/', authenticate, authorize('admin'), asyncHandler(async (req, res) 
 
 // Get user by ID (admin only)
 router.get('/:id', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id).select('-password');
+  const user = await User.findById(req.params.id).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter');
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
@@ -235,7 +220,7 @@ router.get('/all', authenticate, authorize('admin'), asyncHandler(async (req, re
   sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
   const users = await User.find(filter)
-    .select('-password')
+    .select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter')
     .sort(sort)
     .skip(skip)
     .limit(parseInt(limit));
@@ -254,46 +239,13 @@ router.get('/all', authenticate, authorize('admin'), asyncHandler(async (req, re
 
 // Create new user (admin only)
 router.post('/create', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { firstName, lastName, email, password, role, department } = req.body;
-
-  // Check if user already exists
-  const existingUser = await User.findOne({ email });
-  if (existingUser) {
-    return res.status(400).json({ error: 'User already exists with this email' });
-  }
-
-  const user = new User({
-    firstName,
-    lastName,
-    email,
-    password, // Will be hashed by pre-save middleware
-    role: role || 'user',
-    department: department || null,
-    isActive: true,
-    profile: {
-      avatar: '',
-      phone: '',
-      address: '',
-      bio: ''
-    },
-    preferences: {
-      emailNotifications: true,
-      smsNotifications: false,
-      language: 'en',
-      timezone: 'UTC'
-    }
-  });
-
-  await user.save();
-
-  // Remove password from response
-  const userResponse = user.toObject();
-  delete userResponse.password;
-
-  res.status(201).json({
-    message: 'User created successfully',
-    user: userResponse
-  });
+  const { name, firstName, lastName, email, password, role = 'user', department, organization } = req.body;
+  const fullName = name || [firstName, lastName].filter(Boolean).join(' ');
+  if (!fullName || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || typeof password !== 'string' || password.length < 12 || !['user','agent','analytics','admin'].includes(role)) return res.status(400).json({ error: 'Valid name, email, role and password of at least 12 characters required' });
+  if ((await findUserByEmail(email)).user) return res.status(409).json({ error: 'Email already registered' });
+  const Model = getUserModelByRole(role);
+  const user = await Model.create({ name: fullName, email: email.toLowerCase().trim(), username: await Model.generateUsername(email, fullName), password, role, department, organization, isVerified: true });
+  res.status(201).json({ message: 'User created successfully', user: { id: user._id, name: user.name, email: user.email, role: user.role } });
 }));
 
 // Bulk user operations (admin only)

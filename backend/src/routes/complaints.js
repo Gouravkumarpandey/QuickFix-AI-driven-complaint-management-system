@@ -1,3 +1,5 @@
+import { getSettings } from '../services/settingsService.js';
+import { complaintAccess } from '../middleware/complaintAccess.js';
 import express from 'express';
 import { Complaint } from '../models/Complaint.js';
 import { User, findUserById } from '../models/User.js';
@@ -12,6 +14,7 @@ import { triggerComplaintCreatedSMS, triggerComplaintResolvedSMS } from '../serv
 // import { invalidateComplaintCache } from '../services/cacheService.js';
 
 const router = express.Router();
+router.use(authenticate, complaintAccess);
 
 // Get all complaints for the logged-in user (user's complaint history)
 router.get('/my-complaints', authenticate, asyncHandler(async (req, res) => {
@@ -115,7 +118,7 @@ router.get('/', authenticate, asyncHandler(async (req, res) => {
   if (status) filter.status = status;
   if (category) filter.category = category;
   if (priority) filter.priority = priority;
-  if (assignedTo) filter.assignedTo = assignedTo;
+  if (assignedTo && req.user.role === 'admin') filter.assignedTo = assignedTo;
   if (isEscalated !== undefined) filter.isEscalated = isEscalated === 'true';
 
   // Calculate pagination
@@ -156,7 +159,7 @@ router.get('/:id', authenticate, asyncHandler(async (req, res) => {
   }
 
   // Check permissions (user field contains the user who created the complaint)
-  if (req.user.role === 'user' && complaint.user.toString() !== req.user._id.toString()) {
+  if (req.user.role === 'user' && (complaint.user._id || complaint.user).toString() !== req.user._id.toString()) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -168,7 +171,7 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
   console.log('═══════════════════════════════════════════════════════');
   console.log('🆕 NEW COMPLAINT CREATION REQUEST');
   console.log('═══════════════════════════════════════════════════════');
-  console.log('📥 REQUEST BODY:', JSON.stringify(req.body, null, 2));
+
   console.log('👤 REQUEST USER:', JSON.stringify({
     id: req.user?._id,
     email: req.user?.email,
@@ -249,7 +252,8 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
     'Medium': 48,
     'Low': 72
   };
-  const targetHours = slaHours[aiAnalysis.priority] || 48;
+  const settings = await getSettings();
+  const targetHours = settings.slaTargets?.[aiAnalysis.priority] || slaHours[aiAnalysis.priority] || 48;
 
   console.log('🏗️  Creating complaint object...');
   console.log('   User ID for complaint:', req.user._id);
@@ -261,7 +265,7 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
     user: req.user._id, // Links complaint to the authenticated user
     title,
     description,
-    category: category || aiAnalysis.category,
+    category: ({ Technical: 'Technical Support', Service: 'Customer Service', Product: 'Product Quality', General: 'General Inquiry' })[category] || category || aiAnalysis.category,
     priority: aiAnalysis.priority,
     status: 'Open',
     attachments: attachments || [],
@@ -640,7 +644,7 @@ router.patch('/:id/status', authenticate, authorize('agent', 'admin'), asyncHand
 
       // Broadcast agent status update via socket
       if (io) {
-        io.emit('agent_status_update', {
+        io.to('admin').emit('agent_status_update', {
           agentId: updatedAgent._id.toString(),
           availability: updatedAgent.availability,
           name: updatedAgent.name,
@@ -694,16 +698,16 @@ router.patch('/:id/status', authenticate, authorize('agent', 'admin'), asyncHand
       updatedAt: populatedComplaint.updatedAt,
       resolvedAt: status === 'Resolved' ? populatedComplaint.resolution?.resolvedAt : null,
       resolution: populatedComplaint.resolution,
-      updates: populatedComplaint.updates
+      updates: populatedComplaint.updates.filter(update => !update.isInternal)
     };
 
     // Emit to specific user for their dashboard (using both patterns for compatibility)
-    const userId = complaint.user.toString();
+    const userId = (complaint.user._id || complaint.user).toString();
     io.to(`user:${userId}`).emit('complaintUpdated', { complaint: complaintData });
     io.to(`user:${userId}`).emit('complaint_status_updated', { complaint: complaintData });
 
     // Broadcast to all for general updates
-    io.emit('complaintStatusChanged', {
+    io.to('admin').emit('complaintStatusChanged', {
       complaintId: complaint._id,
       status: complaint.status,
       updatedBy: req.user._id,
@@ -726,7 +730,7 @@ router.patch('/:id/status', authenticate, authorize('agent', 'admin'), asyncHand
         agentId: complaint.assignedTo?.toString() || null,
         resolvedBy: req.user._id.toString(),
         resolvedAt: new Date().toISOString(),
-        userId: complaint.user.toString(),
+        userId: (complaint.user._id || complaint.user).toString(),
         title: complaint.title,
         priority: complaint.priority
       });
@@ -748,7 +752,7 @@ router.patch('/:id/status', authenticate, authorize('agent', 'admin'), asyncHand
 }));
 
 // Assign complaint to agent
-router.patch('/:id/assign', authenticate, authorize('admin', 'agent'), asyncHandler(async (req, res) => {
+router.patch('/:id/assign', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
   const { agentId } = req.body;
 
   if (!agentId) {
@@ -760,6 +764,8 @@ router.patch('/:id/assign', authenticate, authorize('admin', 'agent'), asyncHand
     return res.status(404).json({ error: 'Complaint not found' });
   }
 
+  const { user: targetAgent } = await findUserById(agentId);
+  if (!targetAgent || targetAgent.role !== 'agent' || targetAgent.isActive === false) return res.status(400).json({ error: 'Invalid agent' });
   complaint.assignedTo = agentId;
   complaint.status = 'In Progress';
   complaint.updatedAt = new Date();
@@ -767,10 +773,9 @@ router.patch('/:id/assign', authenticate, authorize('admin', 'agent'), asyncHand
   // Add update record
   complaint.updates.push({
     message: `Complaint assigned to agent`,
-    author: `${req.user.firstName} ${req.user.lastName}`,
-    authorId: req.user._id,
+    updatedBy: req.user._id,
     timestamp: new Date(),
-    type: 'assignment',
+    updateType: 'assignment',
     isInternal: false
   });
 
@@ -789,7 +794,7 @@ router.patch('/:id/assign', authenticate, authorize('admin', 'agent'), asyncHand
   // Emit socket event for complaint assignment
   const io = req.app.get('io');
   if (io) {
-    io.emit('complaintAssigned', {
+    io.to('admin').emit('complaintAssigned', {
       complaintId: complaint._id,
       assignedTo: agentId,
       assignedBy: req.user._id
@@ -799,7 +804,7 @@ router.patch('/:id/assign', authenticate, authorize('admin', 'agent'), asyncHand
     try {
       const agent = await User.findById(agentId);
       if (agent) {
-        io.emit('agent_status_update', {
+        io.to('admin').emit('agent_status_update', {
           agentId: agent._id.toString(),
           availability: 'busy',
           name: agent.name,
@@ -826,6 +831,7 @@ router.post('/:id/updates', authenticate, asyncHandler(async (req, res) => {
   }
 
   const { message, type = 'comment', isInternal = false, attachments } = req.body;
+  if (req.user.role === 'user' && (isInternal || type !== 'comment')) return res.status(403).json({ error: 'Customers can only add public comments' });
 
   const complaint = await Complaint.findById(req.params.id);
   if (!complaint) {
@@ -833,7 +839,7 @@ router.post('/:id/updates', authenticate, asyncHandler(async (req, res) => {
   }
 
   // Check permissions (user field contains the user who created the complaint)
-  if (req.user.role === 'user' && complaint.user.toString() !== req.user._id.toString()) {
+  if (req.user.role === 'user' && (complaint.user._id || complaint.user).toString() !== req.user._id.toString()) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -850,11 +856,11 @@ router.post('/:id/updates', authenticate, asyncHandler(async (req, res) => {
   await complaint.save();
 
   // Invalidate cache since complaint was updated
-  await invalidateComplaintCache(complaint._id.toString());
+  // Caching is disabled; no invalidation required.
 
   // Emit socket event
   const io = req.app.get('io');
-  io.emit('complaintCommentAdded', {
+  io.to(`user:${complaint.user}`).to(`agent:${complaint.assignedTo}`).to('admin').emit('complaintCommentAdded', {
     complaintId: complaint._id,
     update: complaint.updates[complaint.updates.length - 1],
     addedBy: req.user._id
@@ -876,19 +882,16 @@ router.patch('/:id/escalate', authenticate, authorize('agent', 'admin'), asyncHa
     return res.status(404).json({ error: 'Complaint not found' });
   }
 
-  complaint.isEscalated = true;
-  complaint.escalationReason = reason;
-  complaint.escalatedAt = new Date();
+  complaint.escalation = { escalatedBy: req.user._id, reason, escalatedAt: new Date(), resolved: false };
   complaint.status = 'Escalated';
   complaint.updatedAt = new Date();
 
   // Add update record
   complaint.updates.push({
     message: `Complaint escalated: ${reason}`,
-    author: `${req.user.firstName} ${req.user.lastName}`,
-    authorId: req.user._id,
+    updatedBy: req.user._id,
     timestamp: new Date(),
-    type: 'escalation',
+    updateType: 'escalation',
     isInternal: false
   });
 
@@ -896,7 +899,7 @@ router.patch('/:id/escalate', authenticate, authorize('agent', 'admin'), asyncHa
 
   // Emit socket event
   const io = req.app.get('io');
-  io.emit('complaintEscalated', {
+  io.to('admin').emit('complaintEscalated', {
     complaintId: complaint._id,
     reason,
     escalatedBy: req.user._id
@@ -919,7 +922,7 @@ router.post('/:id/feedback', authenticate, asyncHandler(async (req, res) => {
   }
 
   // Only the complaint owner can submit feedback
-  if (complaint.user.toString() !== req.user._id.toString()) {
+  if ((complaint.user._id || complaint.user).toString() !== req.user._id.toString()) {
     return res.status(403).json({ error: 'Only the complaint owner can submit feedback' });
   }
 
@@ -966,10 +969,9 @@ router.patch('/bulk/assign', authenticate, authorize('admin'), asyncHandler(asyn
       $push: {
         updates: {
           message: `Complaint bulk assigned to ${assignedTo ? 'agent' : 'team'}`,
-          author: `${req.user.firstName} ${req.user.lastName}`,
-          authorId: req.user._id,
+          updatedBy: req.user._id,
           timestamp: new Date(),
-          type: 'assignment',
+          updateType: 'assignment',
           isInternal: false
         }
       }
@@ -999,7 +1001,7 @@ router.patch('/bulk/status', authenticate, authorize('admin', 'agent'), asyncHan
     {
       status,
       updatedAt: new Date(),
-      ...(status === 'Resolved' && { resolvedAt: new Date() })
+      ...(status === 'Resolved' && { 'resolution.resolvedAt': new Date(), 'resolution.resolvedBy': req.user._id, 'resolution.description': message || 'Resolved by administrator' })
     }
   );
 
@@ -1009,10 +1011,9 @@ router.patch('/bulk/status', authenticate, authorize('admin', 'agent'), asyncHan
       $push: {
         updates: {
           message: message || `Status updated to ${status}`,
-          author: `${req.user.firstName} ${req.user.lastName}`,
-          authorId: req.user._id,
+          updatedBy: req.user._id,
           timestamp: new Date(),
-          type: 'status_change',
+          updateType: 'status_change',
           isInternal: false
         }
       }
@@ -1097,8 +1098,7 @@ router.post('/:id/internal-notes', authenticate, authorize('agent', 'admin'), as
 
   const internalNote = {
     message: note,
-    author: `${req.user.firstName} ${req.user.lastName}`,
-    authorId: req.user._id,
+    updatedBy: req.user._id,
     timestamp: new Date(),
     type: 'internal_note',
     isInternal: true
@@ -1132,39 +1132,7 @@ router.get('/:id/internal-notes', authenticate, authorize('agent', 'admin'), asy
 }));
 
 // Escalate complaint
-router.patch('/:id/escalate', authenticate, authorize('agent', 'admin'), asyncHandler(async (req, res) => {
-  const { reason, escalatedTo } = req.body;
 
-  const complaint = await Complaint.findById(req.params.id);
-  if (!complaint) {
-    return res.status(404).json({ error: 'Complaint not found' });
-  }
-
-  complaint.isEscalated = true;
-  complaint.escalation = {
-    reason: reason || 'Manual escalation',
-    escalatedBy: req.user._id,
-    escalatedAt: new Date(),
-    escalatedTo: escalatedTo || null
-  };
-  complaint.priority = 'Urgent'; // Auto-upgrade priority
-  complaint.updatedAt = new Date();
-  complaint.updates.push({
-    message: `Complaint escalated: ${reason || 'Manual escalation'}`,
-    author: `${req.user.firstName} ${req.user.lastName}`,
-    authorId: req.user._id,
-    timestamp: new Date(),
-    type: 'escalation',
-    isInternal: false
-  });
-
-  await complaint.save();
-
-  res.json({
-    message: 'Complaint escalated successfully',
-    escalation: complaint.escalation
-  });
-}));
 
 // Get dashboard statistics for current user
 router.get('/stats/dashboard', authenticate, asyncHandler(async (req, res) => {

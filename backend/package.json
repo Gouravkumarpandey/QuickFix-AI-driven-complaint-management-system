@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "test": "node --test test/*.test.js",
+    "worker": "node worker/sqsWorker.js",
+    "admin:bootstrap": "node scripts/bootstrapAdmin.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

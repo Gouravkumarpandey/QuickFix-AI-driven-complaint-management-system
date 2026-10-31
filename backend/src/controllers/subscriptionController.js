@@ -41,60 +41,7 @@ export const getSubscription = async (req, res) => {
  * Upgrade user plan (after payment verification)
  */
 export const upgradePlan = async (req, res) => {
-  try {
-    const { planType, orderId, paymentId, amount, duration = 30 } = req.body;
-    const userId = req.user.id;
-
-    // Validate plan type
-    if (!['Pro', 'Premium'].includes(planType)) {
-      return res.status(400).json({ message: 'Invalid plan type. Choose Pro or Premium.' });
-    }
-
-    // Find user
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Calculate expiry date
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + duration);
-
-    // Update user plan
-    user.planType = planType;
-    user.planExpiresAt = expiryDate;
-    
-    // Add payment record
-    if (orderId && paymentId) {
-      user.paymentHistory.push({
-        orderId,
-        paymentId,
-        amount,
-        currency: 'INR',
-        status: 'success',
-        planType,
-        createdAt: new Date()
-      });
-    }
-
-    await user.save();
-
-    res.json({
-      success: true,
-      message: `Successfully upgraded to ${planType} plan`,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        planType: user.planType,
-        planExpiresAt: user.planExpiresAt
-      }
-    });
-  } catch (error) {
-    console.error('Error upgrading plan:', error);
-    res.status(500).json({ message: 'Error upgrading plan', error: error.message });
-  }
+  return res.status(409).json({ message: 'Complete Stripe checkout and verify the paid session to upgrade.' });
 };
 
 /**
