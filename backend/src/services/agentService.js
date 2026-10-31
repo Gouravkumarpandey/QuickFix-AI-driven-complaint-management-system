@@ -53,6 +53,9 @@ export const hasActiveComplaints = async (agentId) => {
  */
 export const refreshAgentAvailability = async (agentId) => {
   try {
+    const agent = await AgentUser.findById(agentId);
+    if (!agent) throw new Error('Agent not found');
+    if (agent.availability === 'offline') return agent;
     const hasActive = await hasActiveComplaints(agentId);
     
     // If no active complaints, mark as available; otherwise busy

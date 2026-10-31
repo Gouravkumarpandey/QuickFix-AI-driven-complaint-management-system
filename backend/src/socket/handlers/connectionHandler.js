@@ -47,7 +47,7 @@ const updateOnlineUsers = async () => {
  * @param {object} io - Socket.io instance
  */
 export const broadcastOnlineUsers = (io) => {
-  io.emit('online_users', onlineUsersList);
+  io.to('admin').emit('online_users', onlineUsersList);
 };
 
 /**
@@ -175,7 +175,7 @@ export const initConnectionHandler = (io) => {
     // Send user their unread notifications
     try {
       const unreadNotifications = await Notification.find({
-        recipient: userId,
+        user: userId,
         isRead: false
       }).sort({ createdAt: -1 });
       

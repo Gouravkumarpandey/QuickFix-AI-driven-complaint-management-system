@@ -1,3 +1,4 @@
+import { jwtSecret, verifyToken, sessionAllowed } from '../services/tokenService.js';
 import { User, getUserModelByRole, findUserByEmail, findUserById } from "../models/User.js";
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from "google-auth-library";
@@ -71,12 +72,12 @@ const verifyGoogleToken = async (token) => {
 
 // Generate JWT
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+  return jwt.sign({ id, tokenType: 'access', issuedAt: Date.now() }, jwtSecret(), { expiresIn: "7d" });
 };
 
 // Generate Refresh Token (longer expiration)
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id, tokenType: 'refresh' }, process.env.JWT_SECRET, { expiresIn: "30d" });
+  return jwt.sign({ id, tokenType: 'refresh', issuedAt: Date.now() }, jwtSecret(), { expiresIn: "30d" });
 };
 
 // Set token as a secure cookie
@@ -112,6 +113,7 @@ const validateSignup = (name, email, password) => {
 // Signup with OTP verification
 export const registerUser = async (req, res) => {
   const { name, email, password, role = "user", phoneNumber } = req.body;
+    if (role !== 'user') return res.status(403).json({ message: 'Staff accounts must be created by an administrator' });
 
   console.log("Registration request received:", { name, email, role, phoneNumber: phoneNumber ? '***' : 'not provided' });
 
@@ -260,7 +262,7 @@ export const loginUser = async (req, res) => {
     // Find user across all collections
     const { user, model } = await findUserByEmail(email);
 
-    if (user && (await user.matchPassword(password))) {
+    if (user && user.isActive !== false && (await user.matchPassword(password))) {
       // Check if user is verified (except for OAuth users who are pre-verified)
       if (!user.isVerified && !user.isGoogleUser && !user.isFacebookUser) {
         // Generate new OTP for unverified users
@@ -292,7 +294,8 @@ export const loginUser = async (req, res) => {
       });
 
       // Generate both access and refresh tokens
-      const accessToken = generateToken(user._id);
+      if (user.isActive === false) return res.status(401).json({ message: 'Account deactivated' });
+    const accessToken = generateToken(user._id);
       const refreshToken = generateRefreshToken(user._id);
 
       // Set token as a cookie
@@ -323,6 +326,9 @@ export const loginUser = async (req, res) => {
 
 // Logout
 export const logoutUser = async (req, res) => {
+  req.user.tokensValidAfter = Date.now();
+  await req.user.save();
+  req.app.get('io')?.in(`user:${req.user._id}`).disconnectSockets(true);
   res.clearCookie("token", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -331,75 +337,13 @@ export const logoutUser = async (req, res) => {
   res.status(200).json({ success: true, message: "Logged out successfully" });
 };
 
-// Admin login with fixed credentials (hardcoded for security)
-export const adminLogin = async (req, res) => {
-  const { email, password } = req.body;
-
-  try {
-    if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "Please provide email and password" });
-    }
-
-    // Hardcoded admin credentials - ONLY this email can login as admin
-    const ADMIN_EMAIL = "pandeygourav2002@gmail.com";
-    const ADMIN_PASSWORD = "Gourav#710";
-    const ADMIN_NAME = "Gourav Pandey";
-
-    // Verify credentials match the hardcoded admin account
-    if (email.toLowerCase().trim() !== ADMIN_EMAIL.toLowerCase() || password !== ADMIN_PASSWORD) {
-      console.log(`Failed admin login attempt for email: ${email}`);
-      return res.status(401).json({
-        message: "Invalid administrator credentials"
-      });
-    }
-
-    console.log("Admin logged in successfully with hardcoded credentials");
-
-    // Find or create the admin user in database
-    let adminUser = await User.findOne({ email: ADMIN_EMAIL.toLowerCase() });
-
-    if (!adminUser) {
-      // Create admin user if doesn't exist
-      console.log("Creating admin user in database...");
-      const username = await User.generateUsername(ADMIN_EMAIL, ADMIN_NAME);
-
-      adminUser = await User.create({
-        name: ADMIN_NAME,
-        username: username,
-        email: ADMIN_EMAIL.toLowerCase(),
-        password: ADMIN_PASSWORD,
-        role: 'admin',
-        isVerified: true,
-        isAdmin: true
-      });
-
-      console.log("Admin user created successfully");
-    }
-
-    // Generate both access and refresh tokens
-    const accessToken = generateToken(adminUser._id);
-    const refreshToken = generateRefreshToken(adminUser._id);
-
-    setTokenCookie(res, accessToken);
-
-    res.json({
-      success: true,
-      user: {
-        id: adminUser._id,
-        name: adminUser.name,
-        username: adminUser.username,
-        email: adminUser.email,
-        role: 'admin',
-      },
-      token: accessToken,
-      refreshToken: refreshToken,
-    });
-  } catch (error) {
-    console.error("Admin login error:", error);
-    res.status(500).json({ message: "Server error during admin authentication" });
-  }
+// Admin login uses the same hashed-password authentication as other accounts.
+export const adminLogin = async (req, res, next) => {
+ try {
+  const { user } = await findUserByEmail(req.body.email || '');
+  if (!user || user.role !== 'admin') return res.status(401).json({ message: 'Invalid administrator credentials' });
+  return loginUser(req, res);
+ } catch (error) { next(error); }
 };
 
 // Google Login
@@ -452,6 +396,7 @@ export const googleLogin = async (req, res) => {
       email: user.email,
     });
 
+    if (user.isActive === false) return res.status(401).json({ message: 'Account deactivated' });
     const accessToken = generateToken(user._id);
     setTokenCookie(res, accessToken);
 
@@ -555,6 +500,7 @@ export const decodeGoogleToken = async (req, res) => {
 export const googleSignupWithRole = async (req, res) => {
   try {
     const { token, role = "user", organization, phoneNumber } = req.body;
+    if (role !== 'user') return res.status(403).json({ message: 'Staff accounts must be created by an administrator' });
 
     if (!token) {
       return res.status(400).json({ message: "Google token is required" });
@@ -679,6 +625,7 @@ export const googleSignupWithRole = async (req, res) => {
         .catch((smsError) => console.error("Failed to send signup SMS in background:", smsError));
     }
 
+    if (user.isActive === false) return res.status(401).json({ message: 'Account deactivated' });
     const accessToken = generateToken(user._id);
     setTokenCookie(res, accessToken);
 
@@ -939,6 +886,7 @@ export const decodeGithubCode = async (req, res) => {
 export const githubSignupWithRole = async (req, res) => {
   try {
     const { code, role = "user" } = req.body;
+    if (role !== 'user') return res.status(403).json({ message: 'Staff accounts must be created by an administrator' });
 
     if (!code) {
       return res.status(400).json({ message: "GitHub authorization code is required" });
@@ -1451,6 +1399,7 @@ export const generateComplaintFromAI = async (req, res) => {
 export const facebookSignupWithRole = async (req, res) => {
   try {
     const { code, role = "user", organization, phoneNumber } = req.body;
+    if (role !== 'user') return res.status(403).json({ message: 'Staff accounts must be created by an administrator' });
 
     if (!code) {
       return res.status(400).json({ message: "Facebook authorization code is required" });
@@ -1598,92 +1547,17 @@ export const facebookSignupWithRole = async (req, res) => {
   }
 };
 
-// Token Refresh Endpoint
+// Refresh tokens are accepted only here. Logout and password changes revoke both token types.
 export const refreshToken = async (req, res) => {
   try {
-    // Get the token from the request
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-
-    if (!token) {
-      return res.status(401).json({ message: 'No token provided' });
-    }
-
-    try {
-      // Verify the token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // Find the user
-      const user = await User.findById(decoded.id).select('-password');
-
-      if (!user) {
-        return res.status(404).json({ message: 'User not found' });
-      }
-
-      // Generate new tokens
-      const newToken = generateToken(user._id);
-      const newRefreshToken = generateRefreshToken(user._id);
-
-      // Return the new tokens
-      return res.status(200).json({
-        token: newToken,
-        refreshToken: newRefreshToken,
-        user: {
-          id: user._id,
-          name: `${user.firstName} ${user.lastName}`,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          role: user.role
-        }
-      });
-    } catch (tokenError) {
-      // If token verification fails, try the refresh token
-      const refreshToken = req.body.refreshToken;
-
-      if (!refreshToken) {
-        return res.status(401).json({ message: 'No refresh token provided' });
-      }
-
-      try {
-        const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
-
-        // Check if it's actually a refresh token
-        if (!decoded.tokenType || decoded.tokenType !== 'refresh') {
-          return res.status(401).json({ message: 'Invalid refresh token' });
-        }
-
-        const user = await User.findById(decoded.id).select('-password');
-
-        if (!user) {
-          return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Generate new tokens
-        const newToken = generateToken(user._id);
-        const newRefreshToken = generateRefreshToken(user._id);
-
-        setTokenCookie(res, newToken);
-
-        // Return the new tokens
-        return res.status(200).json({
-          token: newToken,
-          refreshToken: newRefreshToken,
-          user: {
-            id: user._id,
-            name: `${user.firstName} ${user.lastName}`,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            email: user.email,
-            role: user.role
-          }
-        });
-      } catch (refreshError) {
-        return res.status(401).json({ message: 'Invalid or expired refresh token' });
-      }
-    }
-  } catch (error) {
-    console.error('Error in token refresh:', error);
-    return res.status(500).json({ message: 'Server error during token refresh' });
+    const decoded = verifyToken(req.body.refreshToken, 'refresh');
+    const { user } = await findUserById(decoded.id);
+    if (!sessionAllowed(user, decoded)) return res.status(401).json({ message: 'Session revoked' });
+    const token = generateToken(user._id);
+    setTokenCookie(res, token);
+    return res.json({ token, refreshToken: generateRefreshToken(user._id), user: { id: user._id, name: user.name, email: user.email, role: user.role } });
+  } catch {
+    return res.status(401).json({ message: 'Invalid or expired refresh token' });
   }
 };
 
@@ -1720,6 +1594,7 @@ export const verifyOTP = async (req, res) => {
     console.log("User verified successfully:", user.email);
 
     // Generate tokens after verification
+    if (user.isActive === false) return res.status(401).json({ message: 'Account deactivated' });
     const accessToken = generateToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
@@ -1871,10 +1746,8 @@ export const resetPassword = async (req, res) => {
       .digest('hex');
 
     // Find user with valid token
-    const user = await User.findOne({
-      resetPasswordToken: hashedToken,
-      resetPasswordExpire: { $gt: Date.now() }
-    });
+    const models = ['user', 'agent', 'analytics', 'admin'].map(getUserModelByRole);
+    const user = (await Promise.all(models.map(Model => Model.findOne({ resetPasswordToken: hashedToken, resetPasswordExpire: { $gt: Date.now() } })))).find(Boolean);
 
     if (!user) {
       return res.status(400).json({
@@ -1893,6 +1766,7 @@ export const resetPassword = async (req, res) => {
 
     // Update password
     user.password = password;
+    user.tokensValidAfter = Date.now();
 
     // Clear reset token fields
     user.resetPasswordToken = undefined;
@@ -1934,10 +1808,8 @@ export const verifyResetToken = async (req, res) => {
       .digest('hex');
 
     // Find user with valid token
-    const user = await User.findOne({
-      resetPasswordToken: hashedToken,
-      resetPasswordExpire: { $gt: Date.now() }
-    });
+    const models = ['user', 'agent', 'analytics', 'admin'].map(getUserModelByRole);
+    const user = (await Promise.all(models.map(Model => Model.findOne({ resetPasswordToken: hashedToken, resetPasswordExpire: { $gt: Date.now() } })))).find(Boolean);
 
     if (!user) {
       return res.status(400).json({

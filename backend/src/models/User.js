@@ -4,6 +4,18 @@ import bcrypt from "bcryptjs";
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
+    isActive: { type: Boolean, default: true },
+    tokensValidAfter: { type: Number, default: 0 },
+    isOnline: { type: Boolean, default: false },
+    lastActive: Date,
+    department: String,
+    preferences: {
+      emailNotifications: { type: Boolean, default: true },
+      smsNotifications: { type: Boolean, default: false },
+      pushNotifications: { type: Boolean, default: true },
+      language: { type: String, default: 'en' },
+      timezone: { type: String, default: 'UTC' }
+    },
     username: { 
       type: String, 
       unique: true, 
@@ -73,6 +85,11 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+userSchema.set('toJSON', { transform(_doc, value) {
+  for (const key of ['password','otp','otpExpiry','resetPasswordToken','resetPasswordExpire','tokensValidAfter']) delete value[key];
+  return value;
+} });
 
 // Hash password before saving
 userSchema.pre("save", async function (next) {

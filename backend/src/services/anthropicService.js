@@ -147,7 +147,7 @@ Description: ${description}
 
 Return JSON with:
 1. "category" (Technical Support, Billing, Product Quality, Customer Service, Delivery, General Inquiry, Refund Request, Account Issues)
-2. "priority" (Low, Medium, High, Urgent)
+2. "priority" (Low, Medium, High, Critical)
 3. "sentiment" (Positive, Neutral, Negative)
 4. "summary" (Brief 1-sentence summary)
 `;

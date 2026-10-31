@@ -97,7 +97,7 @@ class ApiService {
   }
 
   async refreshToken(token: string) {
-    return this.request('/auth/refresh', { method: 'POST', body: { token } });
+    return this.request('/auth/refresh', { method: 'POST', body: { refreshToken: token } });
   }
 
   // --------------------- Complaints ---------------------

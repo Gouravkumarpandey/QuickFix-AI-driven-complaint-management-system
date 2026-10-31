@@ -47,8 +47,7 @@ export const broadcastDashboardStats = async (io) => {
     
     const resolvedTodayComplaints = await Complaint.countDocuments({
       status: 'Resolved',
-      'statusHistory.updatedAt': { $gte: today },
-      'statusHistory.status': 'Resolved'
+      'resolution.resolvedAt': { $gte: today },
     });
     
     // Get agent statistics
@@ -68,7 +67,7 @@ export const broadcastDashboardStats = async (io) => {
     
     for (const complaint of resolvedComplaints30Days) {
       const createdAt = new Date(complaint.createdAt);
-      const resolvedStatusUpdate = complaint.statusHistory.find(sh => sh.status === 'Resolved');
+      const resolvedStatusUpdate = complaint.resolution?.resolvedAt ? { updatedAt: complaint.resolution.resolvedAt } : null;
       
       if (resolvedStatusUpdate) {
         const resolvedAt = new Date(resolvedStatusUpdate.updatedAt);
@@ -109,7 +108,7 @@ export const broadcastDashboardStats = async (io) => {
     };
     
     // Broadcast to all admin and agent users
-    io.emit('dashboard_update', dashboardData);
+    io.to('admin').to('analytics').emit('dashboard_update', dashboardData);
   } catch (error) {
     console.error('Error broadcasting dashboard stats:', error);
   }

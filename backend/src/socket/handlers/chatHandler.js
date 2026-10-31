@@ -23,7 +23,7 @@ export const initChatHandler = (io) => {
         }
         
         // Users can only access chats for their own complaints unless they're agents or admins
-        const isOwner = complaint.userId?.toString() === socket.user._id.toString();
+        const isOwner = complaint.user?.toString() === socket.user._id.toString();
         const isAssignedAgent = complaint.assignedTo?.toString() === socket.user._id.toString();
         const isAdmin = socket.user.role === 'admin';
         
@@ -63,7 +63,7 @@ export const initChatHandler = (io) => {
         }
         
         // Security check - only owner, assigned agent, or admin can send messages
-        const isOwner = complaint.userId?.toString() === socket.user._id.toString();
+        const isOwner = complaint.user?.toString() === socket.user._id.toString();
         const isAssignedAgent = complaint.assignedTo?.toString() === socket.user._id.toString();
         const isAdmin = socket.user.role === 'admin';
         
@@ -72,12 +72,13 @@ export const initChatHandler = (io) => {
           return;
         }
         
+        if (typeof message !== 'string' || !message.trim() || message.length > 2000) { socket.emit('error', { message: 'Message must contain 1–2000 characters' }); return; }
         // Create message object
         const chatMessage = {
           sender: socket.user._id,
           senderName: socket.user.name || `${socket.user.firstName} ${socket.user.lastName}`,
           senderRole: socket.user.role,
-          content: message,
+          text: message,
           timestamp: new Date()
         };
         
@@ -100,22 +101,12 @@ export const initChatHandler = (io) => {
           recipientId = complaint.assignedTo;
         } else {
           // If sender is an agent or admin, notify the complaint owner
-          recipientId = complaint.userId;
+          recipientId = complaint.user;
         }
         
         // Only send notification if recipient exists and isn't the sender
         if (recipientId && recipientId.toString() !== socket.user._id.toString()) {
-          const notification = await createNotification({
-            type: 'new_message',
-            recipient: recipientId,
-            content: `New message in complaint #${complaint.ticketNumber}`,
-            reference: {
-              type: 'complaint',
-              id: complaintId
-            }
-          });
-          
-          sendNotification(io, notification, [recipientId]);
+          await createNotification({ userId: recipientId, title: 'New message', message: `New message in complaint #${complaint.complaintId}`, type: 'new_message', complaintId });
         }
       } catch (error) {
         console.error('Error sending message:', error);
@@ -134,7 +125,7 @@ export const initChatHandler = (io) => {
         }
         
         // Security check - only owner, assigned agent, or admin can mark messages as read
-        const isOwner = complaint.userId?.toString() === socket.user._id.toString();
+        const isOwner = complaint.user?.toString() === socket.user._id.toString();
         const isAssignedAgent = complaint.assignedTo?.toString() === socket.user._id.toString();
         const isAdmin = socket.user.role === 'admin';
         

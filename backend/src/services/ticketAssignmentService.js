@@ -1,281 +1,44 @@
+import { getSettings } from './settingsService.js';
 import { User, AgentUser } from '../models/User.js';
 import { Complaint } from '../models/Complaint.js';
 import { createNotification } from './notificationService.js';
 import anthropicService from './anthropicService.js';
 import { updateAgentAvailability } from './agentService.js';
 
-/**
- * AI-powered intelligent ticket assignment
- * Uses Anthropic Claude to analyze complaint and assign to best available agent
- * @param {string} complaintId - The ID of the complaint to assign
- * @param {object} io - Socket.io instance for real-time notifications
- * @returns {Promise<object>} The assigned agent and updated complaint
- */
-export const aiAssignToAgent = async (complaintId, io = null) => {
-  try {
-    const complaint = await Complaint.findById(complaintId);
-
-    if (!complaint) {
-      throw new Error(`Complaint ${complaintId} not found`);
-    }
-
-    if (complaint.assignedTo) {
-      console.log(`Complaint ${complaintId} is already assigned`);
-      return { complaint, assignedAgent: null, message: 'Already assigned' };
-    }
-
-    // Get all agents with their current workload
-    const agents = await AgentUser.find({}).lean();
-
-    if (!agents || agents.length === 0) {
-      console.error('❌ NO AGENTS FOUND IN DATABASE!');
-      return { complaint, assignedAgent: null, message: 'No agents found in database.' };
-    }
-
-    // Filter out offline agents
-    const activeAgents = agents.filter(agent =>
-      !agent.availability || agent.availability !== 'offline'
-    );
-
-    if (activeAgents.length === 0) {
-      console.log('❌ All agents are offline');
-      return { complaint, assignedAgent: null, message: 'All agents offline' };
-    }
-
-    // Get active ticket counts for each agent
-    const agentProfiles = await Promise.all(
-      activeAgents.map(async (agent) => {
-        const activeTicketCount = await Complaint.countDocuments({
-          assignedTo: agent._id,
-          status: { $nin: ['Resolved', 'Closed'] }
-        });
-
-        return {
-          id: agent._id,
-          name: agent.name,
-          email: agent.email,
-          activeTickets: activeTicketCount,
-          expertise: agent.organization || 'General'
-        };
-      })
-    );
-
-    console.log(`🤖 Using Anthropic AI to assign complaint ${complaint.complaintId}...`);
-    const aiAssignment = await anthropicService.assignTicketToAgent(
-      {
-        title: complaint.title,
-        description: complaint.description,
-        category: complaint.category,
-        priority: complaint.priority
-      },
-      agentProfiles
-    );
-
-    if (!aiAssignment.success) {
-      console.log('AI assignment failed, falling back to basic assignment');
-      return autoAssignToFreeAgent(complaintId, io);
-    }
-
-    const selectedAgent = aiAssignment.agent;
-
-    // Assign the complaint to the selected agent
-    complaint.assignedTo = selectedAgent.id;
-    complaint.status = 'In Progress';
-
-    const agentContactInfo = `\n\n---\n**Assigned Agent:** ${selectedAgent.name}\n**Agent Email:** ${selectedAgent.email}\n**Assignment Date:** ${new Date().toLocaleString()}\n---`;
-    if (!complaint.description.includes('**Assigned Agent:**')) {
-      complaint.description += agentContactInfo;
-    }
-
-    complaint.updates.push({
-      message: `🤖 AI-assigned to ${selectedAgent.name}: ${aiAssignment.reasoning}`,
-      updatedBy: selectedAgent.id,
-      updateType: 'assignment',
-      previousValue: 'Unassigned',
-      newValue: selectedAgent.name,
-      metadata: {
-        method: 'ai-claude',
-        confidence: aiAssignment.confidence
-      },
-      createdAt: new Date(),
-    });
-
-    await complaint.save();
-
-    // Mark agent as busy
+// Automatic assignment uses the capacity rule: one active complaint per agent.
+async function assignAvailable(complaintId, io, useAI) {
+  const settings = await getSettings();
+  if (settings.autoAssignment?.enabled === false) return { assignedAgent: null, message: 'Automatic assignment disabled' };
+  const complaint = await Complaint.findById(complaintId);
+  if (!complaint) throw new Error('Complaint not found');
+  if (complaint.assignedTo) return { complaint, assignedAgent: null, message: 'Already assigned' };
+  let candidates = await AgentUser.find({ availability: 'available', isActive: { $ne: false } }).lean();
+  const loads = await Promise.all(candidates.map(agent => Complaint.countDocuments({ assignedTo: agent._id, status: { $nin: ['Resolved','Closed'] } })));
+  candidates = candidates.filter((_, index) => loads[index] === 0);
+  if (useAI && candidates.length) {
     try {
-      if (selectedAgent.activeTickets >= 4) {
-        await updateAgentAvailability(selectedAgent.id, 'busy');
-      }
-    } catch (err) { console.error('Error updating availability:', err); }
-
-    // Notifications...
-    await createNotification({
-      userId: selectedAgent.id,
-      title: 'New Ticket Assignment (AI)',
-      message: `AI assigned ticket #${complaint.complaintId} to you.`,
-      type: 'complaint_assigned',
-      priority: 'high',
-      complaintId: complaint._id,
-      data: { complaintId: complaint.complaintId }
-    });
-
-    if (io) {
-      const { notifyAgentAssignment } = await import('../socket/handlers/complaintHandler.js');
-      notifyAgentAssignment(io, selectedAgent.id, {
-        complaintId: complaint.complaintId,
-        title: complaint.title,
-        aiAssignment: { confidence: aiAssignment.confidence }
-      });
-    }
-
-    return {
-      complaint,
-      assignedAgent: selectedAgent,
-      message: 'AI-powered assignment successful'
-    };
-
-  } catch (error) {
-    console.error('Error in aiAssignToAgent:', error.message);
-    return autoAssignToFreeAgent(complaintId, io);
+      const result = await anthropicService.assignTicketToAgent(complaint, candidates.map(agent => ({ id: agent._id, name: agent.name, email: agent.email, activeTickets: 0, expertise: agent.organization || 'General' })));
+      if (result.success) candidates.sort((a, b) => Number(String(b._id) === String(result.agent.id)) - Number(String(a._id) === String(result.agent.id)));
+    } catch { /* Availability-based assignment remains functional without AI. */ }
   }
-};
-
-/**
- * Find a free agent (with no assigned tasks) and assign complaint
- * @param {string} complaintId - The ID of the complaint to assign
- * @param {object} io - Socket.io instance for real-time notifications
- * @returns {Promise<object>} The assigned agent and updated complaint
- */
-export const autoAssignToFreeAgent = async (complaintId, io = null) => {
-  try {
-    const complaint = await Complaint.findById(complaintId);
-
-    if (!complaint) {
-      throw new Error(`Complaint ${complaintId} not found`);
-    }
-
-    if (complaint.assignedTo) {
-      console.log(`Complaint ${complaintId} is already assigned`);
-      return { complaint, assignedAgent: null, message: 'Already assigned' };
-    }
-
-    // Find agents with ZERO active tickets (completely free)
-    const agents = await AgentUser.find({}).lean();
-
-    if (!agents || agents.length === 0) {
-      console.log('No agents available in the system');
-      return { complaint, assignedAgent: null, message: 'No agents found' };
-    }
-
-    // Get the counts of active complaints per agent
-    const agentLoads = await Promise.all(
-      agents.map(async (agent) => {
-        const activeTicketCount = await Complaint.countDocuments({
-          assignedTo: agent._id,
-          status: { $nin: ['Resolved', 'Closed'] }
-        });
-
-        return {
-          agentId: agent._id,
-          name: agent.name,
-          email: agent.email,
-          activeTickets: activeTicketCount
-        };
-      })
-    );
-
-    // Find agents with 0 active tickets (completely free)
-    const freeAgents = agentLoads.filter(agent => agent.activeTickets === 0);
-
-    if (freeAgents.length === 0) {
-      console.log('No free agents available - all agents have assigned tasks');
-      return { complaint, assignedAgent: null, message: 'All agents are busy' };
-    }
-
-    // Pick the first free agent (or randomize for load distribution)
-    const selectedAgent = freeAgents[0];
-
-    // Get agent email from database
-    const agentUser = await AgentUser.findById(selectedAgent.agentId).select('email');
-    const agentEmail = agentUser?.email || 'Not available';
-
-    // Assign the complaint to the free agent
-    complaint.assignedTo = selectedAgent.agentId;
-    complaint.status = 'In Progress';
-
-    // Add agent contact information to the complaint description
-    const agentContactInfo = `\n\n---\n**Assigned Agent:** ${selectedAgent.name}\n**Agent Email:** ${agentEmail}\n**Assignment Date:** ${new Date().toLocaleString()}\n---`;
-
-    // Append agent info to description if not already present
-    if (!complaint.description.includes('**Assigned Agent:**')) {
-      complaint.description += agentContactInfo;
-    }
-
-    complaint.updates.push({
-      message: `Ticket automatically assigned to agent ${selectedAgent.name} (${agentEmail}) - Free agent`,
-      updatedBy: selectedAgent.agentId,
-      updateType: 'assignment',
-      previousValue: 'Unassigned',
-      newValue: `${selectedAgent.name} (${agentEmail})`,
-      metadata: {
-        agentEmail: agentEmail
-      },
-      createdAt: new Date(),
-    });
-
-    await complaint.save();
-
-    // Mark agent as busy after assignment
-    try {
-      await updateAgentAvailability(selectedAgent.agentId, 'busy');
-      console.log(`📌 Agent ${selectedAgent.name} marked as busy after assignment`);
-    } catch (err) {
-      console.error('Error updating agent availability to busy:', err);
-    }
-
-    // Create notification for the agent
-    await createNotification({
-      userId: selectedAgent.agentId,
-      title: 'New Ticket Assignment',
-      message: `You have been assigned to ticket #${complaint.complaintId}`,
-      type: 'complaint_assigned',
-      priority: 'high',
-      complaintId: complaint._id,
-      data: { complaintId: complaint.complaintId, userId: complaint.user }
-    });
-
-    // Send real-time WebSocket notification to the agent
-    if (io) {
-      // Import the notification function
-      const { notifyAgentAssignment } = await import('../socket/handlers/complaintHandler.js');
-
-      notifyAgentAssignment(io, selectedAgent.agentId, {
-        _id: complaint._id,
-        complaintId: complaint.complaintId,
-        title: complaint.title,
-        description: complaint.description,
-        priority: complaint.priority,
-        category: complaint.category
-      });
-    }
-
-    console.log(`✅ Complaint ${complaint.complaintId} assigned to free agent ${selectedAgent.name}`);
-
-    return {
-      complaint,
-      assignedAgent: {
-        id: selectedAgent.agentId,
-        name: selectedAgent.name,
-        activeTickets: selectedAgent.activeTickets
-      },
-      message: 'Assigned to free agent'
-    };
-  } catch (error) {
-    console.error('Error in autoAssignToFreeAgent:', error.message);
-    throw error;
+  for (const candidate of candidates) {
+    const claimed = await AgentUser.findOneAndUpdate({ _id: candidate._id, availability: 'available', isActive: { $ne: false } }, { $set: { availability: 'busy' } }, { new: true });
+    if (!claimed) continue;
+    let updated;
+    try { updated = await Complaint.findOneAndUpdate({ _id: complaintId, assignedTo: null, status: 'Open' }, {
+      $set: { assignedTo: claimed._id, status: 'In Progress' },
+      $push: { updates: { message: `Assigned to ${claimed.name}`, updatedBy: claimed._id, updateType: 'assignment', createdAt: new Date() } }
+    }, { new: true, runValidators: true });
+    } catch (error) { await updateAgentAvailability(claimed._id, 'available'); throw error; }
+    if (!updated) { await updateAgentAvailability(claimed._id, 'available'); return { complaint, assignedAgent: null, message: 'Ticket already claimed' }; }
+    try { await createNotification({ userId: claimed._id, title: 'New Ticket Assignment', message: `Assigned ticket #${updated.complaintId}`, type: 'complaint_assigned', complaintId: updated._id }); } catch (error) { console.error('Assignment notification failed:', error.message); }
+    if (io) { const { notifyAgentAssignment } = await import('../socket/handlers/complaintHandler.js'); notifyAgentAssignment(io, claimed._id, updated); }
+    return { complaint: updated, assignedAgent: { id: claimed._id, name: claimed.name, email: claimed.email }, message: 'Assigned successfully' };
   }
-};
+  return { complaint, assignedAgent: null, message: 'No free agents available' };
+}
+export const aiAssignToAgent = (id, io = null) => assignAvailable(id, io, true);
+export const autoAssignToFreeAgent = (id, io = null) => assignAvailable(id, io, false);
 
 /**
  * Manually assign a complaint to a specific agent
@@ -392,8 +155,8 @@ export const getAgentsWithWorkload = async () => {
           : 0;
 
         // Determine agent status based on workload
-        const activeTickets = (ticketCounts['Open'] || 0) + (ticketCounts['In Progress'] || 0);
-        const status = activeTickets >= 5 ? 'busy' : 'available';
+        const activeTickets = Object.entries(ticketCounts).filter(([status]) => !['Resolved','Closed'].includes(status)).reduce((sum, [, count]) => sum + count, 0);
+        const status = activeTickets > 0 ? 'busy' : 'available';
 
         return {
           id: agentId.toString(),

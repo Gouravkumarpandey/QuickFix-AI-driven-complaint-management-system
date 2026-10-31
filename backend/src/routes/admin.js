@@ -1,3 +1,5 @@
+import { getSettings, saveSettings } from '../services/settingsService.js';
+import { toCSV } from '../utils/csv.js';
 import express from 'express';
 import { Complaint } from '../models/Complaint.js';
 import { User, AgentUser } from '../models/User.js';
@@ -114,8 +116,8 @@ router.get('/agents/performance', authenticate, authorize('admin'), asyncHandler
   try {
     // Get all agents from both User collection (with role: 'agent') and AgentUser collection
     const [usersAsAgents, agentUsers] = await Promise.all([
-      User.find({ role: 'agent' }).select('-password').lean(),
-      AgentUser.find({}).select('-password').lean()
+      User.find({ role: 'agent' }).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter').lean(),
+      AgentUser.find({}).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter').lean()
     ]);
     
     // Combine and deduplicate agents by email
@@ -272,7 +274,7 @@ router.get('/users', authenticate, authorize('admin'), asyncHandler(async (req, 
   sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
   const users = await User.find(filter)
-    .select('-password')
+    .select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter')
     .sort(sort)
     .skip(skip)
     .limit(parseInt(limit));
@@ -351,7 +353,7 @@ router.get('/complaints', authenticate, authorize('admin'), asyncHandler(async (
   sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
   const complaints = await Complaint.find(filter)
-    .populate('userId', 'firstName lastName email')
+    .populate('user', 'name email')
     .populate('assignedTo', 'firstName lastName email department')
     .sort(sort)
     .skip(skip)
@@ -382,7 +384,7 @@ router.patch('/complaints/bulk-assign', authenticate, authorize('admin'), asyncH
   }
 
   try {
-    const agent = await User.findById(agentId);
+    const agent = await AgentUser.findById(agentId);
     if (!agent || agent.role !== 'agent') {
       return res.status(400).json({ error: 'Invalid agent ID' });
     }
@@ -427,10 +429,9 @@ router.patch('/complaints/bulk-close', authenticate, authorize('admin'), asyncHa
         $push: {
           updates: {
             message: reason || 'Complaint closed by administrator',
-            author: `${req.user.firstName} ${req.user.lastName}`,
-            authorId: req.user._id,
+            updatedBy: req.user._id,
             timestamp: new Date(),
-            type: 'status_change',
+            updateType: 'status_change',
             isInternal: false
           }
         }
@@ -479,7 +480,7 @@ router.get('/config', authenticate, authorize('admin'), asyncHandler(async (req,
     }
   };
 
-  res.json(config);
+  res.json(await getSettings(config));
 }));
 
 // Update system configuration
@@ -498,8 +499,8 @@ router.patch('/config', authenticate, authorize('admin'), asyncHandler(async (re
     }
   }
 
-  // TODO: Save configuration to database
-  res.json({ message: 'Configuration updated successfully' });
+  const config = await saveSettings(req.body);
+  res.json({ message: 'Configuration updated successfully', config });
 }));
 
 // Export data
@@ -527,18 +528,18 @@ router.get('/export/:type', authenticate, authorize('admin'), asyncHandler(async
 
     if (type === 'complaints') {
       data = await Complaint.find(filter)
-        .populate('userId', 'firstName lastName email')
+        .populate('user', 'name email')
         .populate('assignedTo', 'firstName lastName email')
         .lean();
     } else {
-      data = await User.find(filter).select('-password').lean();
+      data = await User.find(filter).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter').lean();
     }
 
     if (format === 'csv') {
       // In a real application, you would use a CSV library to format the data
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename=${type}-export.csv`);
-      res.send('CSV export not implemented in this demo');
+      res.send(toCSV(data, type === 'complaints' ? ['complaintId', 'title', 'category', 'priority', 'status', 'createdAt'] : ['name', 'email', 'role', 'createdAt']));
     } else {
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename=${type}-export.json`);
@@ -586,19 +587,15 @@ router.get('/settings', authenticate, authorize('admin'), asyncHandler(async (re
     }
   };
 
-  res.json(systemSettings);
+  res.json(await getSettings(systemSettings));
 }));
 
 // Update system settings
 router.patch('/settings', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
   const { slaTargets, autoAssignment, categories, departments, notifications } = req.body;
 
-  // In a real app, you would update a settings collection in the database
-  // For now, we'll just return success
-  res.json({
-    message: 'System settings updated successfully',
-    settings: req.body
-  });
+  const settings = await saveSettings(req.body);
+  res.json({ message: 'System settings updated successfully', settings });
 }));
 
 // Advanced analytics for admin dashboard
