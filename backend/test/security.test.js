@@ -109,11 +109,11 @@ test('customer chat uses schema-compatible ownership and message fields',async()
   const old=Complaint.findById;
   const complaint=new Complaint({_id:ticket,user:owner,assignedTo:agent,title:'Test',description:'Test',category:'Billing'});
   complaint.save=async()=>{await complaint.validate();return complaint;};Complaint.findById=async()=>complaint;
-  const handlers={};const events=[];
-  const io={on(_event,callback){callback({user:{_id:owner,name:'Customer',role:'user'},on(event,handler){handlers[event]=handler;},join(room){events.push(room);},emit(event,payload){events.push({event,payload});}});},to(){return this;},emit(){}};
+  const handlers={};const events=[];const deliveryRooms=[];
+  const io={on(_event,callback){callback({user:{_id:owner,name:'Customer',role:'user'},on(event,handler){handlers[event]=handler;},join(room){events.push(room);},emit(event,payload){events.push({event,payload});}});},to(room){deliveryRooms.push(room);return this;},emit(){}};
   // Avoid notification writes in this focused chat persistence test.
   complaint.assignedTo=null;
-  try {initChatHandler(io);await handlers.join_chat({complaintId:ticket});await handlers.send_message({complaintId:ticket,message:'Hello support'});assert.equal(complaint.messages[0].text,'Hello support');assert.ok(events.includes(`chat:${ticket}`));assert.equal(events.some(x=>x.event==='error'),false);}
+  try {initChatHandler(io);await handlers.join_chat({complaintId:ticket});await handlers.send_message({complaintId:ticket,message:'Hello support'});assert.equal(complaint.messages[0].text,'Hello support');assert.ok(events.includes(`chat:${ticket}`));assert.equal(events.some(x=>x.event==='error'),false);assert.equal(deliveryRooms.some(room=>room.startsWith('chat:')),false);assert.ok(deliveryRooms.includes(`user:${owner}`));}
   finally{Complaint.findById=old;}
 });
 
