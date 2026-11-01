@@ -174,12 +174,9 @@ function AppContent() {
         {/* Protected Routes */}
         <Route
           path="/dashboard"
-          element={
-            <ProtectedRoute>
-              <DashboardRoute />
-            </ProtectedRoute>
-          }
+          element={<ProtectedRoute><Navigate to="/workspaces" replace /></ProtectedRoute>}
         />
+        <Route path="/legacy-dashboard" element={<ProtectedRoute><MfaBoundary><DashboardRoute /></MfaBoundary></ProtectedRoute>} />
 
         <Route path="/workspaces" element={<ProtectedRoute><MfaBoundary><WorkspaceConsole /></MfaBoundary></ProtectedRoute>} />
         <Route path="/sso" element={<SSOLogin/>}/>

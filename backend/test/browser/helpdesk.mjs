@@ -185,7 +185,8 @@ async function main() {
       },
     },
   );
-  await page.goto("http://localhost:5175/workspaces");
+  await page.goto("http://localhost:5175/dashboard");
+  await page.waitForURL("**/workspaces");
   await page.getByRole("button", { name: /Reject all/i }).click();
   await page
     .getByRole("heading", { name: "Operations overview", exact: true })

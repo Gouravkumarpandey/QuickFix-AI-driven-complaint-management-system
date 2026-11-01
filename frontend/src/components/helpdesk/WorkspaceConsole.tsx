@@ -252,9 +252,9 @@ export function WorkspaceConsole() {
             <Menu size={22} />
           </button>
           <Link
-            to="/dashboard"
+            to="/legacy-dashboard"
             className="text-slate-400"
-            aria-label="Back to dashboard"
+            aria-label="Open legacy complaint dashboard"
           >
             <ArrowLeft size={19} />
           </Link>
