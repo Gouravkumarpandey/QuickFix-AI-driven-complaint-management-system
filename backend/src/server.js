@@ -1,3 +1,11 @@
+import { keyRoutes, developerRoutes } from './helpdesk/developer.js';
+import commerceRoutes from './helpdesk/commerce.js';
+import helpdeskRoutes from './helpdesk/routes.js';
+import portalRoutes from './helpdesk/portal.js';
+import { connectorRoutes, channelRoutes } from './helpdesk/connectors.js';
+import { billingRoutes } from './helpdesk/billing.js';
+import attachmentRoutes from './helpdesk/attachments.js';
+import helpdeskAI from './helpdesk/ai.js';
 import { safeRequestPath } from './utils/requestLog.js';
 // Load environment variables first, before any other imports
 import dotenv from "dotenv";
@@ -112,6 +120,7 @@ const io = new Server(server, {
 
       // Allow your specific origins
       const allowedOrigins = [
+        ...(process.env.FRONTEND_URL ? [new URL(process.env.FRONTEND_URL).origin] : []),
         'http://localhost:3000',
         'http://localhost:5173',
         'http://localhost:5174',
@@ -367,6 +376,7 @@ app.use((req, res, next) => {
 // CORS must be applied FIRST so all responses (including errors) have CORS headers
 const corsOptions = {
   origin: [
+    ...(process.env.FRONTEND_URL ? [new URL(process.env.FRONTEND_URL).origin] : []),
     "https://quickfix.innovexlabs.me",
     "https://innovexlabs.me",
     "http://localhost:5173",
@@ -378,7 +388,7 @@ const corsOptions = {
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'Idempotency-Key'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'Idempotency-Key', 'X-Ticket-Token', 'X-File-Name', 'X-Attachment-Visibility'],
   exposedHeaders: ['Authorization']
 };
 
@@ -406,6 +416,7 @@ morgan.token('safe-url', safeRequestPath);
 app.use(morgan(':remote-addr :method :safe-url :status :res[content-length] - :response-time ms'));
 app.use(cookieParser());
 app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), webhookHandler);
+app.use('/api/channels', channelRoutes);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -456,6 +467,10 @@ app.use("/api/subscriptions", subscriptionsRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api/sms", smsRoutes);
 // app.use("/api/admin", cacheRoutes); // Redis cache routes disabled
+
+app.use('/api/workspaces', helpdeskRoutes, connectorRoutes, billingRoutes, attachmentRoutes, helpdeskAI, commerceRoutes, keyRoutes);
+app.use('/api/developer', developerRoutes);
+app.use('/api/help', portalRoutes);
 
 // CSP violation reporting endpoint
 app.post("/api/csp-report", express.json({ type: 'application/csp-report' }), cspReportHandler);

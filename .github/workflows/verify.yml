@@ -7,6 +7,8 @@ permissions:
 jobs:
   backend:
     env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
       MONGOMS_DISABLE_POSTINSTALL: '1'
       MONGOMS_DOWNLOAD_IGNORE_MISSING_HEADER: 'true'
     runs-on: ubuntu-latest
@@ -24,6 +26,13 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:integration
+      - run: npm ci --prefix ../frontend
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: helpdesk-browser-review
+          path: /tmp/quickfix-*.png
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 15

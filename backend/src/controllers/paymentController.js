@@ -1,3 +1,4 @@
+import { processWorkspaceCheckout, syncWorkspaceSubscription } from '../helpdesk/billing.js';
 import { processCheckout, processRefund, validatePaidSession } from '../services/paymentService.js';
 import { stripe } from '../services/stripeClient.js';
 import { User } from '../models/User.js';
@@ -220,9 +221,22 @@ export const webhookHandler = async (req, res) => {
         console.log('Payment succeeded:', session.id);
 
         // Update user plan if not already updated
-        if (session.payment_status === 'paid') {
+        if (session.metadata?.workspaceId) { await processWorkspaceCheckout(stripe, session); }
+        else if (session.payment_status === 'paid') {
           await processCheckout(stripe, session);
         }
+        break;
+
+      case 'invoice.paid':
+      case 'invoice.payment_failed': {
+        const subscriptionId = event.data.object.subscription;
+        if (typeof subscriptionId === 'string') await syncWorkspaceSubscription(await stripe.subscriptions.retrieve(subscriptionId));
+        break;
+      }
+
+      case 'customer.subscription.updated':
+      case 'customer.subscription.deleted':
+        await syncWorkspaceSubscription(await stripe.subscriptions.retrieve(event.data.object.id));
         break;
 
       case 'payment_intent.payment_failed':
