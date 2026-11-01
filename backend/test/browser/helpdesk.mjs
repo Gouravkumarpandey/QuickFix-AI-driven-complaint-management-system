@@ -169,8 +169,9 @@ async function main() {
   );
   await page.addInitScript(
     ({ access, user }) => {
-      sessionStorage.setItem("token", access);
-      sessionStorage.setItem("user", JSON.stringify(user));
+      // Seed once so MFA verification can replace the session across reloads.
+      if(!sessionStorage.getItem('token'))sessionStorage.setItem("token", access);
+      if(!sessionStorage.getItem('user'))sessionStorage.setItem("user", JSON.stringify(user));
     },
     {
       access,
