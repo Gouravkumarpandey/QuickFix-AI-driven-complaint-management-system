@@ -23,6 +23,7 @@ async function main() {
   process.env.PORT = "5105";
   process.env.FRONTEND_URL = "http://localhost:5175";
   process.env.VITE_API_URL = "http://localhost:5105/api";
+  process.env.VITE_API_BASE_URL = "http://localhost:5105/api";
   process.env.VITE_SOCKET_SERVER_URL = "http://localhost:5105";
   process.env.NODE_ENV = "test";
   await mongoose.connect(process.env.MONGODB_URI);
@@ -130,6 +131,7 @@ async function main() {
   const access = jwt.sign(
     { id: String(user._id), tokenType: "access", issuedAt: Date.now() + 1 },
     process.env.JWT_SECRET,
+    { expiresIn: "1h" },
   );
   await page.addInitScript(
     ({ access, user }) => {
