@@ -176,6 +176,7 @@ function SecurityView({ workspaceId, role, run, busy }: Props) {
     [recovery, setRecovery] = useState<string[]>([]),
     [code, setCode] = useState(""),
     [roleName, setRoleName] = useState(""),
+    [editingRole, setEditingRole] = useState(""),
     [permissions, setPermissions] = useState<string[]>([]),
     [members, setMembers] = useState<
       {
@@ -367,16 +368,43 @@ function SecurityView({ workspaceId, role, run, busy }: Props) {
             onSubmit={(e) => {
               e.preventDefault();
               void run(async () => {
-                await api.post(base + "/roles", {
-                  name: roleName,
-                  permissions,
-                });
+                if (editingRole)
+                  await api.patch(base + "/roles/" + editingRole, {
+                    name: roleName,
+                    permissions,
+                  });
+                else
+                  await api.post(base + "/roles", {
+                    name: roleName,
+                    permissions,
+                  });
+                setEditingRole("");
                 setRoleName("");
                 setPermissions([]);
                 await load();
-              }, "Custom role created.");
+              }, "Custom role saved.");
             }}
           >
+            <select
+              className={input + " max-w-sm"}
+              aria-label="Edit custom role"
+              value={editingRole}
+              onChange={(e) => {
+                setEditingRole(e.target.value);
+                const role = security.roles.find(
+                  (r) => r._id === e.target.value,
+                );
+                setRoleName(role?.name || "");
+                setPermissions(role?.permissions || []);
+              }}
+            >
+              <option value="">Create a new role</option>
+              {security.roles.map((r) => (
+                <option key={r._id} value={r._id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
             <input
               className={input + " max-w-sm"}
               required
@@ -403,8 +431,26 @@ function SecurityView({ workspaceId, role, run, busy }: Props) {
               ))}
             </div>
             <button className={button} disabled={busy}>
-              Create restricted role
+              {editingRole ? "Save role changes" : "Create restricted role"}
             </button>
+            {editingRole && (
+              <button
+                type="button"
+                className={secondary + " ml-2"}
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    await api.delete(base + "/roles/" + editingRole);
+                    setEditingRole("");
+                    setRoleName("");
+                    setPermissions([]);
+                    await load();
+                  }, "Unused role deleted.")
+                }
+              >
+                Delete unused role
+              </button>
+            )}
           </form>
           <div className="mt-6 space-y-3">
             {members
@@ -910,29 +956,35 @@ function IndiaBilling({ workspaceId, role, run, busy }: Props) {
                   const { data: i } = await api.get(
                     base + "/invoices/" + row._id,
                   );
-                  const win = window.open("", "_blank");
-                  if (!win)
-                    throw new Error("Allow a pop-up to open your invoice.");
-                  win.document.write(
-                    `<html><head><title>${escape(i.receipt)}</title><style>body{font:15px Arial;max-width:850px;margin:50px auto;padding:24px}td{padding:12px;border-bottom:1px solid #ddd}table{width:100%}h1{color:#0f766e}</style></head><body><h1>${escape(i.invoiceType)}</h1><p>${escape(i.invoiceNumber || i.receipt)} · ${escape(new Date(i.paidAt).toLocaleDateString())}</p><h3>${escape(i.seller.name)}</h3><p>${escape(i.seller.address)}<br>GSTIN: ${escape(i.seller.gstin || "—")}</p><h3>Bill to: ${escape(i.customer.name)}</h3><p>${escape(i.customer.address)}<br>GSTIN: ${escape(i.customer.gstin || "—")}<br>Place of supply: ${escape(i.customer.stateName)} (${escape(i.customer.stateCode)})</p><table><tr><td>${escape(i.description)}<br>SAC: ${escape(i.seller.sac || "—")}</td><td>${escape(money(i.net))}</td></tr>${[
-                      "cgst",
-                      "sgst",
-                      "igst",
-                    ]
-                      .filter((k) => i[k])
-                      .map(
-                        (k) =>
-                          `<tr><td>${k.toUpperCase()}</td><td>${escape(money(i[k]))}</td></tr>`,
-                      )
-                      .join(
-                        "",
-                      )}<tr><td><b>Total paid (INR)</b></td><td><b>${escape(money(i.total))}</b></td></tr></table><p>Tax rate: ${escape(i.taxRate / 100)}%. Reverse charge: No.</p><p>GST fields are a draft for accounting review. Add any required digital signature / IRN in your accounting workflow before issuing a tax invoice.</p><p>Payment: ${escape(i.paymentId)} · ${escape(i.status)}</p><button onclick="window.print()">Print / save PDF</button></body></html>`,
+                  const html = `<html><head><title>${escape(i.receipt)}</title><style>body{font:15px Arial;max-width:850px;margin:50px auto;padding:24px}td{padding:12px;border-bottom:1px solid #ddd}table{width:100%}h1{color:#0f766e}</style></head><body><h1>${escape(i.invoiceType)}</h1><p>${escape(i.invoiceNumber || i.receipt)} · ${escape(new Date(i.paidAt).toLocaleDateString())}</p><h3>${escape(i.seller.name)}</h3><p>${escape(i.seller.address)}<br>GSTIN: ${escape(i.seller.gstin || "—")}</p><h3>Bill to: ${escape(i.customer.name)}</h3><p>${escape(i.customer.address)}<br>GSTIN: ${escape(i.customer.gstin || "—")}<br>Place of supply: ${escape(i.customer.stateName)} (${escape(i.customer.stateCode)})</p><table><tr><td>${escape(i.description)}<br>SAC: ${escape(i.seller.sac || "—")}</td><td>${escape(money(i.net))}</td></tr>${[
+                    "cgst",
+                    "sgst",
+                    "igst",
+                  ]
+                    .filter((k) => i[k])
+                    .map(
+                      (k) =>
+                        `<tr><td>${k.toUpperCase()}</td><td>${escape(money(i[k]))}</td></tr>`,
+                    )
+                    .join(
+                      "",
+                    )}<tr><td><b>Total paid (INR)</b></td><td><b>${escape(money(i.total))}</b></td></tr></table><p>Tax rate: ${escape(i.taxRate / 100)}%. Reverse charge: No.</p><p>GST fields are a draft for accounting review. Add any required digital signature / IRN in your accounting workflow before issuing a tax invoice.</p><p>Payment: ${escape(i.paymentId)} · ${escape(i.status)}</p><button onclick="window.print()">Print / save PDF</button></body></html>`;
+                  const url = URL.createObjectURL(
+                    new Blob([html], { type: "text/html;charset=utf-8" }),
                   );
-                  win.document.close();
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.download =
+                    (i.invoiceNumber || i.receipt).replace(
+                      /[^a-z0-9-]/gi,
+                      "-",
+                    ) + ".html";
+                  link.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 1000);
                 })
               }
             >
-              Open invoice
+              Download printable invoice
             </button>
           </div>
         ))}

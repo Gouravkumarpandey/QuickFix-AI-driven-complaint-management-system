@@ -399,6 +399,7 @@ router.get(
       query.status = { $nin: ["Resolved", "Closed"] };
     }
     if (selected.bucket === "due-today") {
+      query["sla.pausedAt"] = null;
       query.status = { $nin: ["Resolved", "Closed"] };
       query["sla.resolutionDue"] = {
         $gte: new Date(),

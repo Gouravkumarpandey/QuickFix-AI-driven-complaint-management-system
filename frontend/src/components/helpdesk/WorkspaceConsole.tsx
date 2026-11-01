@@ -425,34 +425,36 @@ export function WorkspaceConsole() {
               >
                 {tabs
                   .filter(([label]) =>
-                    label === "Dashboard"
-                      ? staff
-                      : label === "Security"
+                    label === "Migration"
+                      ? member.role === "owner"
+                      : label === "Dashboard"
                         ? staff
-                        : label === "Inbox"
-                          ? member.role !== "analyst"
-                          : label === "Knowledge base"
-                            ? staff
-                            : label === "Customers"
-                              ? work
-                              : label === "Tools"
-                                ? staff
-                                : [
-                                      "Team",
-                                      "Settings",
-                                      "Connections",
-                                      "Billing",
-                                      "Channels",
-                                      "Security",
-                                      "India billing",
-                                      "AI studio",
-                                      "Migration",
-                                      "Readiness",
-                                    ].includes(label)
-                                  ? manage
-                                  : ["owner", "admin", "analyst"].includes(
-                                      member.role,
-                                    ),
+                        : label === "Security"
+                          ? staff
+                          : label === "Inbox"
+                            ? member.role !== "analyst"
+                            : label === "Knowledge base"
+                              ? staff
+                              : label === "Customers"
+                                ? work
+                                : label === "Tools"
+                                  ? staff
+                                  : [
+                                        "Team",
+                                        "Settings",
+                                        "Connections",
+                                        "Billing",
+                                        "Channels",
+                                        "Security",
+                                        "India billing",
+                                        "AI studio",
+                                        "Migration",
+                                        "Readiness",
+                                      ].includes(label)
+                                    ? manage
+                                    : ["owner", "admin", "analyst"].includes(
+                                        member.role,
+                                      ),
                   )
                   .map(([label, Icon]) => (
                     <button

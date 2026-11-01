@@ -595,3 +595,66 @@ enterpriseSecurityRoutes.patch(
     res.json({ updated: true });
   }),
 );
+
+enterpriseSecurityRoutes.patch(
+  "/:workspaceId/roles/:roleId",
+  permit("owner"),
+  wrap(async (req, res) => {
+    const input = validate(
+      Joi.object({
+        name: Joi.string().trim().min(2).max(80),
+        permissions: Joi.array()
+          .items(Joi.string().valid(...permissions))
+          .unique(),
+      }).min(1),
+      req.body,
+    );
+    requireFeature(req.workspace, "roles");
+    const role = await withActor(req, async (session, workspace) => {
+      const role = await CustomRole.findOneAndUpdate(
+        { _id: objectId(req.params.roleId), workspace: workspace._id },
+        { $set: input },
+        { new: true, session },
+      );
+      if (!role) throw fail("Role not found", 404);
+      await audit(
+        workspace._id,
+        req.user._id,
+        "security.role-updated",
+        role._id,
+        session,
+      );
+      return role;
+    });
+    res.json(role);
+  }),
+);
+enterpriseSecurityRoutes.delete(
+  "/:workspaceId/roles/:roleId",
+  permit("owner"),
+  wrap(async (req, res) => {
+    await withActor(req, async (session, workspace) => {
+      const id = objectId(req.params.roleId);
+      if (
+        await Membership.exists({
+          workspace: workspace._id,
+          customRole: id,
+        }).session(session)
+      )
+        throw fail("Reassign all members before deleting this role", 409);
+      const result = await CustomRole.deleteOne(
+        { _id: id, workspace: workspace._id },
+        { session },
+      );
+      if (!result.deletedCount) throw fail("Role not found", 404);
+      await audit(
+        workspace._id,
+        req.user._id,
+        "security.role-deleted",
+        id,
+        session,
+      );
+    });
+    res.json({ deleted: true });
+  }),
+);

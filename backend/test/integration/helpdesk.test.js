@@ -1732,3 +1732,47 @@ test("an obsolete outbox lease cannot overwrite a delivery claimed by another wo
   assert.equal(current.leaseToken, "replacement-worker");
   assert.equal(current.state, "processing");
 });
+
+test("custom role edits apply immediately and assigned roles cannot be deleted", async () => {
+  await upgrade(a);
+  await invite(alice, a, carol, "agent");
+  const role = await body(
+      await call(alice, `/workspaces/${a._id}/roles`, "POST", {
+        name: "Temporary reader",
+        permissions: ["tickets.read"],
+      }),
+    ),
+    member = await Membership.findOne({ workspace: a._id, user: carol._id });
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/roles/assign/${member._id}`,
+      "PATCH",
+      { roleId: role._id },
+    ),
+  );
+  assert.equal(
+    (await call(alice, `/workspaces/${a._id}/roles/${role._id}`, "DELETE"))
+      .status,
+    409,
+  );
+  await body(
+    await call(alice, `/workspaces/${a._id}/roles/${role._id}`, "PATCH", {
+      permissions: [],
+    }),
+  );
+  assert.equal((await call(carol, `/workspaces/${a._id}/tickets`)).status, 403);
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/roles/assign/${member._id}`,
+      "PATCH",
+      { roleId: null },
+    ),
+  );
+  assert.equal(
+    (await call(alice, `/workspaces/${a._id}/roles/${role._id}`, "DELETE"))
+      .status,
+    200,
+  );
+});

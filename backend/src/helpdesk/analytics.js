@@ -129,6 +129,7 @@ export async function operations(
                 $cond: [
                   {
                     $and: [
+                      { $not: [{ $ifNull: ["$sla.pausedAt", false] }] },
                       { $gte: ["$sla.resolutionDue", now] },
                       {
                         $lt: [
@@ -247,6 +248,28 @@ export async function operations(
       },
     },
   ]);
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: workspace.settings.timezone || "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const dayKey = (date) => {
+    const p = Object.fromEntries(
+      formatter.formatToParts(date).map((part) => [part.type, part.value]),
+    );
+    return `${p.year}-${p.month}-${p.day}`;
+  };
+  const dates = new Set(
+    Array.from({ length: days + 1 }, (_, i) =>
+      dayKey(new Date(since.getTime() + i * 86400000)),
+    ),
+  );
+  dates.add(dayKey(now));
+  const series = [...dates].sort().map((date) => ({
+    _id: date,
+    created: trend.find((row) => row._id === date)?.created || 0,
+  }));
   return {
     summary: summary[0] || {
       total: 0,
@@ -256,7 +279,7 @@ export async function operations(
       dueToday: 0,
       resolved: 0,
     },
-    trend,
+    trend: series,
     channels,
     priorities,
     agents: agents.map((agent) => ({

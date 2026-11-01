@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { writeFile } from "node:fs/promises";
+import { writeFile, readFile } from "node:fs/promises";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
@@ -27,6 +27,7 @@ async function main() {
   process.env.VITE_API_BASE_URL = "http://localhost:5105/api";
   process.env.VITE_SOCKET_SERVER_URL = "http://localhost:5105";
   process.env.NODE_ENV = "test";
+  process.env.INTEGRATION_ENCRYPTION_KEY = "5".repeat(64);
   await mongoose.connect(process.env.MONGODB_URI);
   const { User } = await import("../../src/models/User.js");
   const { Workspace, Membership, Article, Resource } = await import(
@@ -107,6 +108,36 @@ async function main() {
       text: "Thank you for sharing your order details. We are checking the latest delivery update and will get back to you.",
     },
     author: user._id,
+  });
+  const { BillingOrder } = await import("../../src/helpdesk/models.js");
+  await BillingOrder.create({
+    workspace: workspace._id,
+    orderId: "order_browserfixture",
+    paymentId: "pay_browserfixture",
+    receipt: "QF-BROWSER-RECEIPT",
+    invoiceNumber: "QF2627/000001",
+    plan: "Pro",
+    seats: 2,
+    net: 10000,
+    tax: 1800,
+    total: 11800,
+    taxRate: 1800,
+    status: "paid",
+    paidAt: new Date(),
+    customer: {
+      name: "Fixture Buyer",
+      address: "Fixture customer address",
+      stateCode: "20",
+      stateName: "Jharkhand",
+    },
+    seller: {
+      name: "<b>Fixture Seller</b>",
+      address: "Fixture seller address",
+      gstin: "20AAAAA0000A1Z5",
+      stateCode: "20",
+      stateName: "Jharkhand",
+      sac: "998314",
+    },
   });
   await import("../../src/server.js");
   process.chdir(new URL("../../../frontend", import.meta.url).pathname);
@@ -200,6 +231,23 @@ async function main() {
     path: "/tmp/quickfix-helpdesk-settings.png",
     fullPage: true,
   });
+  await page
+    .getByRole("button", { name: "India billing", exact: true })
+    .click();
+  await page
+    .getByRole("heading", { name: "Indian billing", exact: true })
+    .waitFor();
+  const invoiceDownload = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Download printable invoice", exact: true })
+    .click();
+  const invoice = await invoiceDownload,
+    invoiceText = await readFile(await invoice.path(), "utf8");
+  if (
+    !invoiceText.includes("&lt;b&gt;Fixture Seller&lt;/b&gt;") ||
+    invoiceText.includes("<b>Fixture Seller</b>")
+  )
+    throw new Error("Invoice content is not escaped");
   await page.setViewportSize({ width: 390, height: 844 });
   await page
     .getByRole("button", { name: "Toggle navigation", exact: true })
@@ -231,6 +279,54 @@ async function main() {
     path: "/tmp/quickfix-help-centre.png",
     fullPage: true,
   });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole("button", { name: "Security", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Account security", exact: true })
+    .waitFor();
+  const enrollmentResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/security/mfa/enroll") &&
+      response.request().method() === "POST",
+  );
+  await page
+    .getByRole("button", { name: "Set up authenticator", exact: true })
+    .click();
+  const enrollment = await (await enrollmentResponse).json();
+  const { totp } = await import("../../src/helpdesk/security.js");
+  await page
+    .getByLabel("Confirm authenticator code", { exact: true })
+    .fill(totp(enrollment.secret));
+  const confirmResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/security/mfa/confirm") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Confirm MFA", exact: true }).click();
+  const confirmation = await (await confirmResponse).json();
+  await page
+    .getByRole("heading", {
+      name: "Save these recovery codes now",
+      exact: true,
+    })
+    .waitFor();
+  await page.evaluate(
+    (access) => sessionStorage.setItem("token", access),
+    access,
+  );
+  await page.reload();
+  await page
+    .getByRole("heading", { name: "Verify your sign-in", exact: true })
+    .waitFor();
+  await page
+    .getByLabel("Authenticator or recovery code", { exact: true })
+    .fill(confirmation.recoveryCodes[0]);
+  await page
+    .getByRole("button", { name: "Verify and continue", exact: true })
+    .click();
+  await page
+    .getByRole("heading", { name: "Operations overview", exact: true })
+    .waitFor();
   console.log(
     "BROWSER_REVIEW",
     JSON.stringify({

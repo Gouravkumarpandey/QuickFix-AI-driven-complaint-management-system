@@ -72,6 +72,7 @@ export async function workspaceAccess(req, res, next) {
         }[segment] || "settings";
       const permission =
         area + "." + (["GET", "HEAD"].includes(req.method) ? "read" : "write");
+      req.requiredPermission = permission;
       if (
         (segment || !["GET", "HEAD"].includes(req.method)) &&
         !role.permissions.includes(permission)
@@ -192,6 +193,19 @@ export async function withActor(req, callback) {
       throw fail("Workspace access changed. Refresh and try again.", 403);
     if (!(await seatAllowed(workspace, member, session)))
       throw fail("Staff seat suspended", 403);
+    if (member.customRole) {
+      requireFeature(workspace, "roles");
+      const role = await CustomRole.findOne({
+        _id: member.customRole,
+        workspace: workspace._id,
+      }).session(session);
+      if (
+        !role ||
+        (req.requiredPermission &&
+          !role.permissions.includes(req.requiredPermission))
+      )
+        throw fail("Custom role access changed. Refresh and try again.", 403);
+    }
     req.member = member;
     return callback(session, workspace);
   });
