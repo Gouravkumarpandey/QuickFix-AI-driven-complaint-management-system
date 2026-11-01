@@ -154,6 +154,7 @@ async function main() {
     },
   );
   await page.goto("http://localhost:5175/workspaces");
+  await page.getByRole("button", {name: /Reject all/i}).click();
   await page
     .getByRole("heading", { name: "Support inbox", exact: true })
     .waitFor();
@@ -193,6 +194,8 @@ async function main() {
   });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.getByRole("button", {name: /Delivery update for order/}).click();
+  await page.getByRole("heading", {name: "Delivery update for order #VT-1042", exact:true}).waitFor();
   if (
     await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
   )
