@@ -1,7 +1,9 @@
+import { WorkspaceConsole } from './components/helpdesk/WorkspaceConsole';
+import { HelpCentre } from './components/helpdesk/HelpCentre';
 import React from 'react';
 // i18n removed
 
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
 import { PageLoadingSkeleton, DashboardSkeleton } from './components/common/SkeletonLoader';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { AuthProvider } from './contexts/AuthContext';
@@ -81,6 +83,7 @@ function DashboardRoute() {
 
   return (
     <div className="min-h-screen bg-gray-900">
+      <div className="bg-blue-600 text-white text-center py-2 text-sm"><Link to="/workspaces">Open company helpdesk →</Link></div>
       <Notifications />
       {activeUser?.role === 'admin' && <AdminDashboard />}
       {activeUser?.role === 'agent' && <AgentDashboard />}
@@ -176,6 +179,9 @@ function AppContent() {
             </ProtectedRoute>
           }
         />
+
+        <Route path="/workspaces" element={<ProtectedRoute><WorkspaceConsole /></ProtectedRoute>} />
+        <Route path="/support/:slug" element={<HelpCentre />} />
 
         {/* Catch all route */}
         <Route path="*" element={<Navigate to="/" replace />} />

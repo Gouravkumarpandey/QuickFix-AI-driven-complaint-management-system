@@ -35,3 +35,6 @@ Thumbs.db
 
 **/.env.*
 !**/.env.example
+
+private-uploads/
+backend/private-uploads/
