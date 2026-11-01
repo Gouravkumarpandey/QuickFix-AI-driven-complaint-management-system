@@ -203,6 +203,7 @@ async function main() {
   await page
     .getByRole("heading", {
       name: "Delivery update for order #VT-1042",
+      level:2,
       exact: true,
     })
     .waitFor();
@@ -259,6 +260,7 @@ async function main() {
   await page
     .getByRole("heading", {
       name: "Delivery update for order #VT-1042",
+      level:2,
       exact: true,
     })
     .waitFor();
