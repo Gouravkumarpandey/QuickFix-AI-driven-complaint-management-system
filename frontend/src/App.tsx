@@ -35,8 +35,7 @@ import { TermsOfService } from './components/legal/TermsOfService';
 
 // Protected Route Component
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
-  if (isLoading) return <div className="min-h-screen flex items-center justify-center" role="status">Loading your workspace…</div>;
+  const { isAuthenticated } = useAuth();
   return isAuthenticated ? <>{children}</> : <Navigate to="/" replace />;
 }
 

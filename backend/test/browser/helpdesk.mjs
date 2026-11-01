@@ -138,8 +138,8 @@ async function main() {
   );
   await page.addInitScript(
     ({ access, user }) => {
-      localStorage.setItem("token", access);
-      localStorage.setItem("user", JSON.stringify(user));
+      sessionStorage.setItem("token", access);
+      sessionStorage.setItem("user", JSON.stringify(user));
     },
     {
       access,
