@@ -149,6 +149,7 @@ export function LoginForm() {
   if (pendingVerification) {
     return (
       <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''}>
+      <Link to="/sso" className="fixed bottom-4 right-4 z-20 bg-white shadow border px-4 py-2 rounded-lg text-sm text-teal-800">Company SSO sign-in</Link>
         <div className="h-screen bg-white flex">
           {/* Left Side - Blue Gradient */}
           <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-blue-600 to-blue-800 relative overflow-hidden">
@@ -211,6 +212,7 @@ export function LoginForm() {
   // ----------------------------------------------------------------------
   return (
     <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''}>
+      <Link to="/sso" className="fixed bottom-4 right-4 z-20 bg-white shadow border px-4 py-2 rounded-lg text-sm text-teal-800">Company SSO sign-in</Link>
       <div className="h-[100dvh] bg-white flex flex-col lg:flex-row overflow-x-hidden overflow-y-auto" style={{ fontFamily: '"Google Sans Flex", sans-serif' }}>
 
         {/* ── MOBILE ONLY: Gradient branded header ── */}

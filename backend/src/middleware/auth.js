@@ -28,6 +28,11 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ error: 'Account is deactivated.' });
     }
 
+    req.authClaims = decoded;
+    if (req.baseUrl !== '/api/security' && req.baseUrl !== '/security') {
+      const { assertMFA } = await import('../helpdesk/security.js');
+      try { await assertMFA(user, decoded); } catch (error) { return res.status(error.statusCode || 403).json({error:error.message,code:'MFA_REQUIRED'}); }
+    }
     req.user = user;
     next();
   } catch (error) {

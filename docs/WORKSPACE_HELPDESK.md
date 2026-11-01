@@ -1,3 +1,5 @@
+> Updated by the [operations and enterprise extension](ENTERPRISE_HELPDESK.md). The feature and limitation list below describes the earlier foundation batch; consult the extension for current scope.
+
 # Workspace helpdesk
 
 Open `/workspaces` after signing in to create a company workspace. Its public help centre is `/support/<slug>`. The console includes an inbox, customer directory, published knowledge base, team management, workflow tools, service settings, connectors, billing, reports and audit records.

@@ -1,4 +1,6 @@
 import mongoose from "mongoose";
+import { CustomRole } from "./models.js";
+import { seatAllowed, requireFeature } from "./entitlements.js";
 import { Membership, Workspace, Ticket, Audit } from "./models.js";
 import { fail } from "./validation.js";
 export const staffRoles = ["owner", "admin", "agent", "analyst"];
@@ -20,6 +22,62 @@ export async function workspaceAccess(req, res, next) {
       active: true,
     });
     if (!workspace || !member) throw fail("Workspace not found", 404);
+    if (!(await seatAllowed(workspace, member)))
+      throw fail(
+        "Staff seat suspended after a plan change. Ask your workspace owner to increase seats.",
+        403,
+      );
+    if (member.customRole) {
+      requireFeature(workspace, "roles");
+      const role = await CustomRole.findOne({
+        _id: member.customRole,
+        workspace: workspace._id,
+      });
+      if (!role) throw fail("Custom role unavailable", 403);
+      req.permissions = role.permissions;
+      const pieces = req.originalUrl
+          .split("?")[0]
+          .split("/")
+          .filter(Boolean)
+          .map(decodeURIComponent),
+        segment =
+          pieces[
+            pieces.findIndex(
+              (piece) => piece.toLowerCase() === String(workspace._id),
+            ) + 1
+          ];
+      const area =
+        {
+          tickets: "tickets",
+          contacts: "contacts",
+          articles: "knowledge",
+          resources: "tools",
+          members: "team",
+          invites: "team",
+          connectors: "connections",
+          channels: "connections",
+          sso: "security",
+          ai: "tools",
+          "api-keys": "connections",
+          jobs: "connections",
+          billing: "billing",
+          operations: "analytics",
+          reports: "analytics",
+          dashboards: "analytics",
+          audit: "analytics",
+          settings: "settings",
+          security: "security",
+          roles: "security",
+          migration: "migration",
+        }[segment] || "settings";
+      const permission =
+        area + "." + (["GET", "HEAD"].includes(req.method) ? "read" : "write");
+      if (
+        (segment || !["GET", "HEAD"].includes(req.method)) &&
+        !role.permissions.includes(permission)
+      )
+        throw fail("Your custom role does not permit this operation", 403);
+    }
     req.workspace = workspace;
     req.member = member;
     next();
@@ -118,6 +176,7 @@ export async function assertSeat(workspace, session) {
 }
 export async function withActor(req, callback) {
   const expectedRole = req.member.role;
+  const expectedCustomRole = String(req.member.customRole || "");
   return inWorkspace(req.workspace._id, async (session, workspace) => {
     const member = await Membership.findOne({
       _id: req.member._id,
@@ -125,8 +184,14 @@ export async function withActor(req, callback) {
       user: req.user._id,
       active: true,
     }).session(session);
-    if (!member || member.role !== expectedRole)
+    if (
+      !member ||
+      member.role !== expectedRole ||
+      String(member.customRole || "") !== expectedCustomRole
+    )
       throw fail("Workspace access changed. Refresh and try again.", 403);
+    if (!(await seatAllowed(workspace, member, session)))
+      throw fail("Staff seat suspended", 403);
     req.member = member;
     return callback(session, workspace);
   });

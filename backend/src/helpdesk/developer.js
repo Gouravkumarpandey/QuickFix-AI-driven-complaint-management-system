@@ -1,4 +1,5 @@
 import express from "express";
+import { seatAllowed } from "./entitlements.js";
 import Joi from "joi";
 import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
@@ -101,7 +102,13 @@ developerRoutes.use(
         role: { $in: ["owner", "admin", "agent"] },
       }),
       workspace = await Workspace.findById(workspaceId);
-    if (!member || !workspace) throw fail("API access revoked", 401);
+    if (!member || !workspace || !(await seatAllowed(workspace, member)))
+      throw fail("API access revoked", 401);
+    if (member.customRole)
+      throw fail(
+        "Custom role staff must use the interactive API with their permissions",
+        403,
+      );
     const { user } = await findUserById(member.user);
     if (!user || user.isActive === false) throw fail("API access revoked", 401);
     req.user = user;

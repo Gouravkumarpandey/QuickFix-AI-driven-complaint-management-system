@@ -1,3 +1,4 @@
+import { entitlement } from "./entitlements.js";
 import express from "express";
 import Joi from "joi";
 import crypto from "node:crypto";
@@ -33,6 +34,9 @@ router.get(
   wrap(async (req, res) =>
     res.json({
       name: req.workspace.name,
+      aiAutomation:
+        req.workspace.aiAutomation &&
+        entitlement(req.workspace).features.includes("semantic"),
       slug: req.workspace.slug,
       fields: req.workspace.settings.customFields,
       language: req.workspace.settings.language,
@@ -66,6 +70,20 @@ router.get(
     );
   }),
 );
+router.get(
+  "/:slug/articles/:articleSlug",
+  wrap(async (req, res) => {
+    const article = await Article.findOne({
+      workspace: req.workspace._id,
+      published: true,
+      slug: String(req.params.articleSlug).slice(0, 150),
+    })
+      .select("slug title body category language updatedAt")
+      .lean();
+    if (!article) throw fail("Article not found", 404);
+    res.json(article);
+  }),
+);
 router.post(
   "/:slug/tickets",
   rateLimit({
@@ -89,13 +107,11 @@ router.post(
     const result = await inWorkspace(req.workspace._id, (session, workspace) =>
       createTicket(workspace, input, "portal", session, { guest: true }),
     );
-    res
-      .status(201)
-      .json({
-        id: result.ticket._id,
-        number: result.ticket.number,
-        accessToken: result.accessToken,
-      });
+    res.status(201).json({
+      id: result.ticket._id,
+      number: result.ticket.number,
+      accessToken: result.accessToken,
+    });
   }),
 );
 const guest = async (req) => {

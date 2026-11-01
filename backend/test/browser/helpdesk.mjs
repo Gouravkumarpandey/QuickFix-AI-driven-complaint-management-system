@@ -154,7 +154,15 @@ async function main() {
     },
   );
   await page.goto("http://localhost:5175/workspaces");
-  await page.getByRole("button", {name: /Reject all/i}).click();
+  await page.getByRole("button", { name: /Reject all/i }).click();
+  await page
+    .getByRole("heading", { name: "Operations overview", exact: true })
+    .waitFor();
+  await page.screenshot({
+    path: "/tmp/quickfix-operations-dashboard.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Inbox", exact: true }).click();
   await page
     .getByRole("heading", { name: "Support inbox", exact: true })
     .waitFor();
@@ -193,9 +201,17 @@ async function main() {
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole("button", { name: "Toggle navigation", exact: true })
+    .click();
   await page.getByRole("button", { name: "Inbox", exact: true }).click();
-  await page.getByRole("button", {name: /Delivery update for order/}).click();
-  await page.getByRole("heading", {name: "Delivery update for order #VT-1042", exact:true}).waitFor();
+  await page.getByRole("button", { name: /Delivery update for order/ }).click();
+  await page
+    .getByRole("heading", {
+      name: "Delivery update for order #VT-1042",
+      exact: true,
+    })
+    .waitFor();
   if (
     await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
   )
@@ -236,7 +252,12 @@ async function main() {
 main()
   .then(() => process.exit(0))
   .catch(async (error) => {
-    await reviewPage?.screenshot({path: "/tmp/quickfix-browser-failure.png", fullPage: true}).catch(() => {});
+    await reviewPage
+      ?.screenshot({
+        path: "/tmp/quickfix-browser-failure.png",
+        fullPage: true,
+      })
+      .catch(() => {});
     console.error(error);
     process.exit(1);
   });

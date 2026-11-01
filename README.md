@@ -1,3 +1,5 @@
+> Enterprise extension and operations dashboard: see [implementation, provider setup and verification scope](docs/ENTERPRISE_HELPDESK.md).
+
 > New workspace helpdesk: see [features, setup and remaining scope](docs/WORKSPACE_HELPDESK.md). Open `/workspaces` after signing in.
 
 > Security and setup changes: see [deployment and verification notes](docs/SECURITY_AND_COMPLETION.md). Public signup now creates customers only; use the administrator CLI to bootstrap an admin and the protected API to create staff.

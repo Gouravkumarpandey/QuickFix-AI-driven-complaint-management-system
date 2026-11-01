@@ -1,3 +1,4 @@
+import api from '../utils/api';
 import React, {
   useEffect,
   useState,
@@ -532,6 +533,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
         } catch {
           return;
         }
+
+        const security=await api.get('/security/mfa');
+        if(security.data.enabled && !security.data.verified)return;
 
         // Create the socket connection with delay to prevent rapid reconnects
         setTimeout(() => {

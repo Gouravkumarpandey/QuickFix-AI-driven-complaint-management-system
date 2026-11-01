@@ -1,3 +1,15 @@
+import OperationsDashboard from "./OperationsDashboard";
+import EnterpriseView, { TicketChannelActions } from "./EnterpriseViews";
+import {
+  LayoutDashboard,
+  ShieldCheck,
+  Phone,
+  IndianRupee,
+  Database,
+  Server,
+  PanelLeftClose,
+  Menu,
+} from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import api from "../../utils/api";
@@ -140,7 +152,9 @@ export function WorkspaceConsole() {
     [selected, setSelected] = useState(""),
     [workspace, setWorkspace] = useState<Workspace | null>(null),
     [member, setMember] = useState<Member | null>(null),
-    [tab, setTab] = useState("Inbox"),
+    [tab, setTab] = useState("Dashboard"),
+    [queue, setQueue] = useState(""),
+    [navOpen, setNavOpen] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false),
@@ -187,7 +201,7 @@ export function WorkspaceConsole() {
           if (active) {
             setWorkspace(data.workspace);
             setMember(data.member);
-            setTab(data.member.role === "analyst" ? "Reports" : "Inbox");
+            setTab(data.member.role === "customer" ? "Inbox" : "Dashboard");
           }
         })
         .catch((error) => {
@@ -209,6 +223,7 @@ export function WorkspaceConsole() {
     staff = member && member.role !== "customer",
     work = member && ["owner", "admin", "agent"].includes(member.role);
   const tabs = [
+    ["Dashboard", LayoutDashboard],
     ["Inbox", Inbox],
     ["Knowledge base", BookOpen],
     ["Customers", Users],
@@ -218,11 +233,24 @@ export function WorkspaceConsole() {
     ["Connections", Plug],
     ["Billing", CreditCard],
     ["Reports", BarChart3],
+    ["Channels", Phone],
+    ["Security", ShieldCheck],
+    ["India billing", IndianRupee],
+    ["AI studio", Sparkles],
+    ["Migration", Database],
+    ["Readiness", Server],
   ] as const;
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b bg-white px-5 py-4 flex flex-wrap items-center justify-between gap-4">
+    <div className="min-h-screen bg-[#f5f7f9] text-slate-900">
+      <header className="border-b bg-white px-4 md:px-7 py-4 flex flex-wrap items-center justify-between gap-3 lg:ml-60">
         <div className="flex items-center gap-3">
+          <button
+            className="lg:hidden text-slate-600"
+            aria-label="Toggle navigation"
+            onClick={() => setNavOpen(!navOpen)}
+          >
+            <Menu size={22} />
+          </button>
           <Link
             to="/dashboard"
             className="text-slate-400"
@@ -230,13 +258,13 @@ export function WorkspaceConsole() {
           >
             <ArrowLeft size={19} />
           </Link>
-          <div className="rounded-xl bg-blue-600 p-2 text-white">
+          <div className="rounded-xl bg-teal-600 p-2 text-white">
             <Inbox size={22} />
           </div>
           <div>
             <h1 className="font-bold text-lg">QuickFix Helpdesk</h1>
             <p className="text-xs text-slate-500">
-              Your team. Your customers. One inbox.
+              Your customer support workspace.
             </p>
           </div>
         </div>
@@ -275,7 +303,7 @@ export function WorkspaceConsole() {
           {notice}
         </div>
       )}
-      <main className="max-w-[1500px] mx-auto p-4 md:p-6">
+      <main className="lg:ml-60 min-w-0 p-4 md:p-7">
         {invite && (
           <section className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4">
             <h2 className="font-semibold">You have a workspace invitation</h2>
@@ -363,54 +391,135 @@ export function WorkspaceConsole() {
         )}
         {workspace && member && (
           <>
-            <div className="flex flex-wrap gap-2 mb-6">
-              {tabs
-                .filter(([label]) =>
-                  label === "Inbox"
-                    ? member.role !== "analyst"
-                    : label === "Knowledge base"
-                      ? staff
-                      : label === "Customers"
-                        ? work
-                        : label === "Tools"
-                          ? staff
-                          : [
-                                "Team",
-                                "Settings",
-                                "Connections",
-                                "Billing",
-                              ].includes(label)
-                            ? manage
-                            : ["owner", "admin", "analyst"].includes(
-                                member.role,
-                              ),
-                )
-                .map(([label, Icon]) => (
-                  <button
-                    key={label}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${tab === label ? "bg-slate-900 text-white" : "bg-white text-slate-500 border"}`}
-                    onClick={() => {
-                      setTab(label);
-                      setError("");
-                      setNotice("");
-                    }}
-                  >
-                    <Icon size={16} />
-                    {label}
-                  </button>
-                ))}
-              <a
-                className={`${secondary} ml-auto`}
-                href={`/support/${workspace.slug}`}
-                target="_blank"
-                rel="noreferrer"
+            {navOpen && (
+              <button
+                aria-label="Close navigation overlay"
+                className="fixed inset-0 bg-black/30 z-40 lg:hidden"
+                onClick={() => setNavOpen(false)}
+              />
+            )}
+            <aside
+              className={`fixed top-0 left-0 bottom-0 w-60 bg-[#102c36] text-slate-300 z-50 flex flex-col transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}
+            >
+              <div className="px-5 py-6 flex items-center gap-3 border-b border-white/10">
+                <div className="w-8 h-8 rounded-lg bg-teal-500 grid place-items-center text-white font-bold">
+                  Q
+                </div>
+                <span className="font-bold text-white text-lg tracking-tight">
+                  QuickFix
+                </span>
+                <button
+                  aria-label="Close navigation"
+                  className="ml-auto lg:hidden"
+                  onClick={() => setNavOpen(false)}
+                >
+                  <PanelLeftClose size={18} />
+                </button>
+              </div>
+              <p className="px-5 pt-6 pb-3 text-[10px] uppercase tracking-[.18em] text-slate-500">
+                Workspace
+              </p>
+              <nav
+                aria-label="Workspace navigation"
+                className="overflow-y-auto flex-1 px-3 space-y-1"
               >
-                Open help centre ↗
-              </a>
-            </div>
+                {tabs
+                  .filter(([label]) =>
+                    label === "Dashboard"
+                      ? staff
+                      : label === "Security"
+                        ? staff
+                        : label === "Inbox"
+                          ? member.role !== "analyst"
+                          : label === "Knowledge base"
+                            ? staff
+                            : label === "Customers"
+                              ? work
+                              : label === "Tools"
+                                ? staff
+                                : [
+                                      "Team",
+                                      "Settings",
+                                      "Connections",
+                                      "Billing",
+                                      "Channels",
+                                      "Security",
+                                      "India billing",
+                                      "AI studio",
+                                      "Migration",
+                                      "Readiness",
+                                    ].includes(label)
+                                  ? manage
+                                  : ["owner", "admin", "analyst"].includes(
+                                      member.role,
+                                    ),
+                  )
+                  .map(([label, Icon]) => (
+                    <button
+                      key={label}
+                      aria-label={label}
+                      className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-sm transition-colors ${tab === label ? "bg-teal-500/15 text-teal-300 font-medium border-l-2 border-teal-400" : "text-slate-400 hover:text-white hover:bg-white/5"}`}
+                      onClick={() => {
+                        setTab(label);
+                        setQueue("");
+                        setNavOpen(false);
+                        setError("");
+                        setNotice("");
+                      }}
+                    >
+                      <Icon size={16} />
+                      {label}
+                    </button>
+                  ))}
+              </nav>
+              <div className="px-4 pb-5 pt-3 border-t border-white/10">
+                <p className="text-xs text-slate-400 truncate mb-3">
+                  {workspace.name}
+                </p>
+                <a
+                  className="text-xs text-teal-300 hover:text-teal-200"
+                  href={`/support/${workspace.slug}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open help centre ↗
+                </a>
+              </div>
+            </aside>
+            {tab === "Dashboard" && staff && (
+              <OperationsDashboard
+                workspaceId={workspace._id}
+                name={workspace.name}
+                role={member.role}
+                run={run}
+                onQueue={(bucket) => {
+                  setQueue(bucket);
+                  setTab("Inbox");
+                }}
+              />
+            )}
+            {(([
+              "Channels",
+              "India billing",
+              "AI studio",
+              "Migration",
+              "Readiness",
+            ].includes(tab) &&
+              manage) ||
+              (tab === "Security" && staff)) && (
+              <EnterpriseView
+                key={workspace._id + tab}
+                workspaceId={workspace._id}
+                view={tab}
+                role={member.role}
+                run={run}
+                busy={busy}
+              />
+            )}
             {tab === "Inbox" && member.role !== "analyst" && (
               <InboxView
-                key={workspace._id}
+                key={workspace._id + queue}
+                initialQueue={queue}
                 workspace={workspace}
                 member={member}
                 run={run}
@@ -516,11 +625,13 @@ export function WorkspaceConsole() {
 }
 type Run = (action: () => Promise<void>, success?: string) => Promise<void>;
 function InboxView({
+  initialQueue = "",
   workspace,
   member,
   run,
   busy,
 }: {
+  initialQueue?: string;
   workspace: Workspace;
   member: Member;
   run: Run;
@@ -534,6 +645,7 @@ function InboxView({
     [members, setMembers] = useState<Member[]>([]),
     [search, setSearch] = useState(""),
     [status, setStatus] = useState(""),
+    [bucket, setBucket] = useState(initialQueue),
     [reply, setReply] = useState(""),
     [internal, setInternal] = useState(false),
     [creating, setCreating] = useState(false),
@@ -568,11 +680,12 @@ function InboxView({
       params: {
         ...(search ? { search } : {}),
         ...(status ? { status } : {}),
+        ...(bucket ? { bucket } : {}),
         ...(view ? { view } : {}),
       },
     });
     setTickets(data.tickets);
-  }, [base, search, status, view]);
+  }, [base, search, status, view, bucket]);
   useEffect(() => {
     void run(load);
   }, [run, load]);
@@ -658,6 +771,19 @@ function InboxView({
           </button>
         </div>
         <div className="p-3 space-y-2">
+          <select
+            aria-label="Ticket queue"
+            className={control}
+            value={bucket}
+            onChange={(e) => setBucket(e.target.value)}
+          >
+            <option value="">All tickets</option>
+            <option value="open">Unresolved</option>
+            <option value="unassigned">Unassigned</option>
+            <option value="overdue">Overdue</option>
+            <option value="due-today">Due in 24 hours</option>
+            <option value="resolved">Resolved & closed</option>
+          </select>
           <input
             className={control}
             placeholder="Search tickets"
@@ -916,7 +1042,9 @@ function InboxView({
                     </span>
                     <span>{date(message.createdAt)}</span>
                   </div>
-                  <p className="whitespace-pre-wrap break-words text-sm">{message.text}</p>
+                  <p className="whitespace-pre-wrap break-words text-sm">
+                    {message.text}
+                  </p>
                   {["queued", "failed"].includes(message.delivery) && (
                     <p className="text-xs text-amber-700 mt-2">
                       Delivery {message.delivery}
@@ -1073,7 +1201,7 @@ function InboxView({
                 type="file"
                 accept="image/png,image/jpeg,application/pdf"
                 className="max-w-full"
-              aria-label="Upload attachment"
+                aria-label="Upload attachment"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   if (file)
@@ -1115,6 +1243,14 @@ function InboxView({
                 ))}
               </div>
             </div>
+            {staff && (
+              <TicketChannelActions
+                base={base}
+                ticketId={selected}
+                channel={ticket.channel}
+                run={run}
+              />
+            )}
             {staff && (
               <details className="border-t mt-5 pt-3 text-sm">
                 <summary className="cursor-pointer text-slate-500">

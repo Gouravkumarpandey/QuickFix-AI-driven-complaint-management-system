@@ -1,3 +1,4 @@
+import { seatAllowed } from "./entitlements.js";
 import crypto from "node:crypto";
 import {
   Ticket,
@@ -87,7 +88,8 @@ export async function applyActions(workspace, ticket, actions, actor, session) {
         active: true,
         role: { $in: ["owner", "admin", "agent"] },
       }).session(session);
-      if (!agent) throw fail("Agent is not in this workspace");
+      if (!agent || !(await seatAllowed(workspace, agent, session)))
+        throw fail("Agent is not in this workspace or its seat is suspended");
       ticket.assignedTo = agent._id;
     } else ticket.assignedTo = null;
   }
@@ -136,6 +138,7 @@ export async function autoAssign(workspace, ticket, session) {
   let selected,
     load = Infinity;
   for (const agent of agents) {
+    if (!(await seatAllowed(workspace, agent, session))) continue;
     const count = await Ticket.countDocuments({
       workspace: workspace._id,
       assignedTo: agent._id,
@@ -154,7 +157,7 @@ export async function createTicket(
   input,
   actor,
   session,
-  { connection, externalId, guest = false } = {},
+  { connection, externalId, guest = false, legacyDate, migration = false } = {},
 ) {
   const email = input.email.toLowerCase().trim();
   const contact = await Contact.findOneAndUpdate(
@@ -168,6 +171,7 @@ export async function createTicket(
   const rawToken = guest ? crypto.randomBytes(32).toString("hex") : null;
   const ticket = new Ticket({
     workspace: workspace._id,
+    ...(legacyDate ? { createdAt: legacyDate } : {}),
     number: `QF-${crypto.randomBytes(6).toString("hex").toUpperCase()}`,
     subject: input.subject,
     description: input.description,
@@ -210,17 +214,21 @@ export async function createTicket(
         author: email,
         authorRole: "customer",
         text: input.description,
+        ...(legacyDate ? { createdAt: legacyDate } : {}),
         connection,
         externalId,
       },
     ],
     { session },
   );
-  await runAutomations(workspace, ticket, "ticket.created", actor, session);
-  await autoAssign(workspace, ticket, session);
+  if (!migration) {
+    await runAutomations(workspace, ticket, "ticket.created", actor, session);
+    await autoAssign(workspace, ticket, session);
+  }
   await ticket.save({ session });
   await audit(workspace._id, actor, "ticket.created", ticket._id, session);
-  await ticketEvent(workspace._id, ticket, "ticket.created", session);
+  if (!migration)
+    await ticketEvent(workspace._id, ticket, "ticket.created", session);
   return { ticket, accessToken: rawToken };
 }
 export async function addMessage(
