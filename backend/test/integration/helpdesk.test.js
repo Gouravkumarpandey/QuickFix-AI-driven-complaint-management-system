@@ -952,3 +952,34 @@ test("guest email proof rotates the original token and cannot be replayed", asyn
   );
   assert.equal((await Ticket.findById(guest.id)).guestVerified, true);
 });
+
+test("SLA batches progress past reported breaches and abandoned final deliveries become retryable", async () => {
+  const first = await createTicket(alice, a),
+    second = await createTicket(alice, a, "Second delayed order");
+  await Ticket.updateMany(
+    { workspace: a._id },
+    { $set: { "sla.firstDue": new Date(Date.now() - 60000) } },
+  );
+  assert.equal(await checkSLAs(1), 1);
+  assert.equal(await checkSLAs(1), 1);
+  assert.equal(await checkSLAs(1), 0);
+  assert.equal(
+    await Ticket.countDocuments({
+      _id: { $in: [first._id, second._id] },
+      "sla.breached": true,
+    }),
+    2,
+  );
+  const job = await Job.create({
+    workspace: a._id,
+    kind: "slack",
+    key: "abandoned-fixture",
+    payload: {},
+    state: "processing",
+    attempts: 5,
+    lockedUntil: new Date(Date.now() - 1000),
+    availableAt: new Date(),
+  });
+  await drainJobs({}, 1);
+  assert.equal((await Job.findById(job._id)).state, "failed");
+});

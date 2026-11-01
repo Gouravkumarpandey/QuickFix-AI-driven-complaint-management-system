@@ -162,6 +162,21 @@ export async function deliver(
   await message.save();
 }
 export async function drainJobs(dependencies = {}, limit = 20) {
+  // A worker may die during its final attempt. Make that job visible for manual retry.
+  await Job.updateMany(
+    {
+      state: "processing",
+      attempts: { $gte: 5 },
+      lockedUntil: { $lt: new Date() },
+    },
+    {
+      $set: {
+        state: "failed",
+        lastError: "Worker lease expired during the final attempt",
+      },
+      $unset: { lockedUntil: 1 },
+    },
+  );
   let processed = 0;
   for (let i = 0; i < limit; i++) {
     const now = new Date(),
@@ -215,9 +230,20 @@ export async function checkSLAs(limit = 100) {
         { "sla.nextDue": { $lt: now } },
         { "sla.resolutionDue": { $lt: now } },
       ],
-    }).limit(limit);
+    }).cursor();
   let count = 0;
-  for (const item of tickets)
+  for await (const item of tickets) {
+    // Do not let previously reported overdue tickets starve later tickets.
+    const observed = [
+      !item.sla.firstRespondedAt && item.sla.firstDue,
+      item.sla.nextDue,
+      item.sla.resolutionDue,
+    ]
+      .filter((date) => date && date < now)
+      .map((date) => date.toISOString())
+      .sort()
+      .join(":");
+    if (!observed || item.sla.lastBreachKey === observed) continue;
     await inWorkspace(item.workspace, async (session, workspace) => {
       const ticket = await Ticket.findOne({
         _id: item._id,
@@ -249,5 +275,8 @@ export async function checkSLAs(limit = 100) {
       await audit(workspace._id, "system", "sla.breached", ticket._id, session);
       count++;
     });
+    if (count >= limit) break;
+  }
+  await tickets.close();
   return count;
 }
