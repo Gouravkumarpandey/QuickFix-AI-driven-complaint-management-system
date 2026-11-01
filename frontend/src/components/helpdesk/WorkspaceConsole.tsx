@@ -115,7 +115,7 @@ interface Resource {
   };
 }
 const control =
-  "w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none";
+  "w-full min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none";
 const button =
   "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50";
 const secondary =
@@ -648,7 +648,7 @@ function InboxView({
       await load();
     });
   return (
-    <div className="grid lg:grid-cols-[360px_1fr] gap-5">
+    <div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-5">
       <section className="bg-white border rounded-xl overflow-hidden">
         <div className="p-4 border-b flex items-center justify-between">
           <h2 className="font-semibold">Support inbox</h2>
@@ -733,7 +733,7 @@ function InboxView({
           ))}
         </div>
       </section>
-      <section className="bg-white border rounded-xl p-5 min-h-[600px]">
+      <section className="min-w-0 bg-white border rounded-xl p-5 min-h-[600px]">
         {creating ? (
           <form
             className="space-y-4 max-w-xl"
@@ -916,7 +916,7 @@ function InboxView({
                     </span>
                     <span>{date(message.createdAt)}</span>
                   </div>
-                  <p className="whitespace-pre-wrap text-sm">{message.text}</p>
+                  <p className="whitespace-pre-wrap break-words text-sm">{message.text}</p>
                   {["queued", "failed"].includes(message.delivery) && (
                     <p className="text-xs text-amber-700 mt-2">
                       Delivery {message.delivery}
@@ -1072,7 +1072,8 @@ function InboxView({
               <input
                 type="file"
                 accept="image/png,image/jpeg,application/pdf"
-                aria-label="Upload attachment"
+                className="max-w-full"
+              aria-label="Upload attachment"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   if (file)
