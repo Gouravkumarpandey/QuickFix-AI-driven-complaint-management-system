@@ -1,3 +1,4 @@
+import { emitComplaintEvent } from '../../services/complaintEvents.js';
 /**
  * Chat Handler - Manages real-time chat messaging for complaints
  */
@@ -88,7 +89,7 @@ export const initChatHandler = (io) => {
         
         // Broadcast message to all users in the chat room
         const roomName = `chat:${complaintId}`;
-        io.to(roomName).emit('new_message', {
+        emitComplaintEvent(io, complaint, 'new_message', {
           complaintId,
           message: chatMessage
         });

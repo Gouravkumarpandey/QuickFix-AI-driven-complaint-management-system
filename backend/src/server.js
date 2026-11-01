@@ -1,3 +1,4 @@
+import { safeRequestPath } from './utils/requestLog.js';
 // Load environment variables first, before any other imports
 import dotenv from "dotenv";
 import { fileURLToPath } from 'url';
@@ -359,7 +360,7 @@ app.get('/api/health', (req, res) => {
 // Middleware
 // Add request logger for debugging
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${safeRequestPath(req)}`);
   next();
 });
 
@@ -377,7 +378,7 @@ const corsOptions = {
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'Idempotency-Key'],
   exposedHeaders: ['Authorization']
 };
 
@@ -401,7 +402,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(morgan("combined"));
+morgan.token('safe-url', safeRequestPath);
+app.use(morgan(':remote-addr :method :safe-url :status :res[content-length] - :response-time ms'));
 app.use(cookieParser());
 app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), webhookHandler);
 app.use(express.json());
@@ -520,7 +522,7 @@ app.use((err, req, res, next) => {
     timestamp: new Date().toISOString(),
     error: err.message,
     stack: err.stack,
-    requestUrl: req.url,
+    requestUrl: safeRequestPath(req),
     requestMethod: req.method,
     // Do not log credentials, cookies, tokens, or customer request bodies.
   });

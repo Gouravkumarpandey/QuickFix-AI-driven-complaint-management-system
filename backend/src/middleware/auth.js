@@ -1,11 +1,10 @@
 import { verifyToken, sessionAllowed } from '../services/tokenService.js';
-import jwt from 'jsonwebtoken';
-import { User, findUserById } from '../models/User.js';
+import { findUserById } from '../models/User.js';
 
 // Authenticate middleware
 const authenticate = async (req, res, next) => {
   try {
-    const token = req.cookies.token || req.header('Authorization')?.replace('Bearer ', '');
+    const token = req.header('Authorization')?.replace(/^Bearer /, '') || req.cookies?.token;
     if (!token) {
       return res.status(401).json({ error: 'Access denied. No token provided.' });
     }
@@ -55,7 +54,7 @@ const authorize = (...roles) => {
 // Optional authentication middleware
 const optionalAuth = async (req, res, next) => {
   try {
-    const token = req.cookies.token || req.header('Authorization')?.replace('Bearer ', '');
+    const token = req.header('Authorization')?.replace(/^Bearer /, '') || req.cookies?.token;
     if (token) {
       const decoded = verifyToken(token);
 

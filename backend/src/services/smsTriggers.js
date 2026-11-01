@@ -1,3 +1,4 @@
+import { notificationAllowed } from './notificationPreferences.js';
 /**
  * SMS Event Triggers
  * This module contains functions to automatically trigger SMS notifications
@@ -144,6 +145,7 @@ export const triggerReminderSMS = async (user, reminderText) => {
  * @param {string} complaintId - Complaint ID
  */
 export const triggerComplaintCreatedSMS = async (user, complaintId) => {
+  if (!notificationAllowed(user, 'sms', 'complaintUpdated')) return { skipped: true };
   try {
     if (!user.phoneNumber) {
       console.log('⚠️  User has no phone number, skipping complaint created SMS');
@@ -171,6 +173,7 @@ export const triggerComplaintCreatedSMS = async (user, complaintId) => {
  * @param {string} agentName - Agent's name
  */
 export const triggerComplaintAssignedSMS = async (user, complaintId, agentName) => {
+  if (!notificationAllowed(user, 'sms', 'complaintAssigned')) return { skipped: true };
   try {
     if (!user.phoneNumber) {
       console.log('⚠️  User has no phone number, skipping complaint assigned SMS');
@@ -197,6 +200,7 @@ export const triggerComplaintAssignedSMS = async (user, complaintId, agentName) 
  * @param {string} complaintId - Complaint ID
  */
 export const triggerComplaintResolvedSMS = async (user, complaintId) => {
+  if (!notificationAllowed(user, 'sms', 'complaintResolved')) return { skipped: true };
   try {
     if (!user.phoneNumber) {
       console.log('⚠️  User has no phone number, skipping complaint resolved SMS');

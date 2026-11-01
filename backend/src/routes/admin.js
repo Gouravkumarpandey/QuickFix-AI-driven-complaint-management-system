@@ -1,3 +1,4 @@
+import { listAccounts, accountStatistics, mutateAccounts, disconnectAccounts, unionAccounts, secretProjection } from '../services/accountService.js';
 import { getSettings, saveSettings } from '../services/settingsService.js';
 import { toCSV } from '../utils/csv.js';
 import express from 'express';
@@ -12,26 +13,11 @@ const router = express.Router();
 router.get('/stats', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
   try {
     // Get user counts from all collections
-    const [usersCount, adminsCount, agentsCount, analyticsCount] = await Promise.all([
-      User.countDocuments({ role: 'user' }),
-      User.countDocuments({ role: 'admin' }),
-      User.countDocuments({ role: 'agent' }),
-      User.countDocuments({ role: 'analytics' })
-    ]);
-    
-    // Total users across all roles
-    const totalUsers = usersCount + adminsCount + agentsCount + analyticsCount;
-    
-    // Active agents (agents who are online or available)
-    const activeAgents = await User.countDocuments({ 
-      role: 'agent', 
-      $or: [
-        { agentStatus: 'available' },
-        { agentStatus: 'busy' },
-        { isOnline: true }
-      ]
-    });
-    
+    const accountStats = await accountStatistics();
+    const { totalUsers } = accountStats;
+    const { users: usersCount, admins: adminsCount, agents: agentsCount, analytics: analyticsCount } = accountStats.roleBreakdown;
+    const activeAgents = await AgentUser.countDocuments({ isActive: { $ne: false }, availability: { $in: ['available','busy'] } });
+
     // Complaint statistics
     const [
       totalComplaints,
@@ -244,78 +230,15 @@ router.get('/agents/performance', authenticate, authorize('admin'), asyncHandler
 }));
 
 // Get all users with enhanced filtering
-router.get('/users', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const {
-    role,
-    department,
-    isActive,
-    page = 1,
-    limit = 10,
-    search,
-    sortBy = 'createdAt',
-    sortOrder = 'desc'
-  } = req.query;
-
-  const filter = {};
-  if (role) filter.role = role;
-  if (department) filter.department = department;
-  if (isActive !== undefined) filter.isActive = isActive === 'true';
-
-  if (search) {
-    filter.$or = [
-      { firstName: { $regex: search, $options: 'i' } },
-      { lastName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } }
-    ];
-  }
-
-  const skip = (parseInt(page) - 1) * parseInt(limit);
-  const sort = {};
-  sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
-
-  const users = await User.find(filter)
-    .select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter')
-    .sort(sort)
-    .skip(skip)
-    .limit(parseInt(limit));
-
-  const total = await User.countDocuments(filter);
-
-  res.json({
-    users,
-    pagination: {
-      current: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit)),
-      total
-    }
-  });
+router.get('/users', authenticate, authorize('admin'), asyncHandler(async (req,res) => {
+  res.json(await listAccounts(req.query));
 }));
 
 // Bulk update users
-router.patch('/users/bulk', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { userIds, updates } = req.body;
-
-  if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-    return res.status(400).json({ error: 'User IDs array is required' });
-  }
-
-  if (!updates || typeof updates !== 'object') {
-    return res.status(400).json({ error: 'Updates object is required' });
-  }
-
-  try {
-    const result = await User.updateMany(
-      { _id: { $in: userIds } },
-      { $set: updates }
-    );
-
-    res.json({
-      message: `${result.modifiedCount} users updated successfully`,
-      modifiedCount: result.modifiedCount
-    });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
+router.patch('/users/bulk', authenticate, authorize('admin'), asyncHandler(async (req,res) => {
+  const users = await mutateAccounts(req.body.userIds, req.body.updates, req.user._id);
+  disconnectAccounts(req.app.get('io'), users.map(user=>user._id));
+  res.json({ message: 'Users updated successfully', modifiedCount: users.length });
 }));
 
 // Get all complaints with admin-level access
@@ -532,7 +455,7 @@ router.get('/export/:type', authenticate, authorize('admin'), asyncHandler(async
         .populate('assignedTo', 'firstName lastName email')
         .lean();
     } else {
-      data = await User.find(filter).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter').lean();
+      data = await User.aggregate([...unionAccounts(), { $match: filter }, { $project: secretProjection }]);
     }
 
     if (format === 'csv') {
@@ -708,7 +631,7 @@ router.get('/analytics/advanced', authenticate, authorize('admin'), asyncHandler
 // Agent workload management
 router.get('/agents/workload', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
   try {
-    const agentWorkloads = await User.aggregate([
+    const agentWorkloads = await User.aggregate([...unionAccounts(),
       { $match: { role: 'agent', isActive: true } },
       {
         $lookup: {

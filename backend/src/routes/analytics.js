@@ -1,3 +1,6 @@
+import Joi from 'joi';
+import { unionAccounts } from '../services/accountService.js';
+import { toCSV } from '../utils/csv.js';
 import express from "express";
 import { Complaint } from "../models/Complaint.js";
 import { User } from "../models/User.js";
@@ -419,7 +422,7 @@ router.get("/dashboard-complete", authenticate, authorize('admin', 'agent', 'ana
         },
         {
           $project: {
-            name: { $concat: ['$firstName', ' ', '$lastName'] },
+            name: 1,
             totalAssigned: { $size: '$assignedComplaints' },
             totalResolved: { $size: '$resolvedComplaints' },
             resolutionRate: {
@@ -481,7 +484,14 @@ router.get("/dashboard-complete", authenticate, authorize('admin', 'agent', 'ana
 
 // Export analytics data
 router.post('/export-report', authenticate, authorize('admin', 'analytics'), asyncHandler(async (req, res) => {
-  const { reportType, format = 'json', timeRange = '30', filters = {} } = req.body;
+  const { error, value } = Joi.object({
+    reportType: Joi.string().valid('complaints','agents','analytics').required(),
+    format: Joi.string().valid('json','csv').default('json'),
+    timeRange: Joi.number().integer().min(1).max(365).default(30),
+    filters: Joi.object({ status: Joi.string().valid('Open','In Progress','Under Review','Resolved','Closed','Escalated'), priority: Joi.string().valid('Low','Medium','High','Critical'), category: Joi.string().valid('Technical Support','Billing','Product Quality','Customer Service','Delivery','General Inquiry','Refund Request','Account Issues') }).default({})
+  }).validate(req.body);
+  if (error) return res.status(400).json({ error: error.details[0].message });
+  const { reportType, format, timeRange, filters } = value;
 
   const days = parseInt(timeRange);
   const startDate = new Date();
@@ -496,12 +506,12 @@ router.post('/export-report', authenticate, authorize('admin', 'analytics'), asy
         data = await Complaint.find({
           createdAt: { $gte: startDate },
           ...filters
-        }).populate('userId', 'firstName lastName email').lean();
+        }).select('complaintId category priority status createdAt resolution.resolvedAt').limit(10000).lean();
         filename = `complaints-report-${Date.now()}`;
         break;
 
       case 'agents':
-        data = await User.aggregate([
+        data = await User.aggregate([...unionAccounts(),
           { $match: { role: 'agent', isActive: true } },
           {
             $lookup: {
@@ -520,7 +530,7 @@ router.post('/export-report', authenticate, authorize('admin', 'analytics'), asy
           },
           {
             $project: {
-              name: { $concat: ['$firstName', ' ', '$lastName'] },
+              name: 1,
               email: 1,
               department: 1,
               totalAssigned: { $size: '$assignedComplaints' }
@@ -537,7 +547,7 @@ router.post('/export-report', authenticate, authorize('admin', 'analytics'), asy
             { $match: { createdAt: { $gte: startDate } } },
             { $group: { _id: '$status', count: { $sum: 1 } } }
           ]),
-          User.aggregate([
+          User.aggregate([...unionAccounts(),
             { $group: { _id: '$role', count: { $sum: 1 } } }
           ]),
           Complaint.aggregate([
@@ -571,7 +581,9 @@ router.post('/export-report', authenticate, authorize('admin', 'analytics'), asy
       // For CSV format (simplified - in production you'd use a proper CSV library)
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename=${filename}.csv`);
-      res.send('CSV export functionality would be implemented here');
+      const rows = Array.isArray(data) ? data : Object.entries(data.summary).flatMap(([dimension, values]) => values.map(item => ({ dimension, value: item._id, count: item.count })));
+      const columns = reportType === 'complaints' ? ['complaintId','category','priority','status','createdAt'] : reportType === 'agents' ? ['name','email','department','totalAssigned'] : ['dimension','value','count'];
+      res.send(toCSV(rows, columns));
     }
   } catch (error) {
     res.status(500).json({

@@ -1,8 +1,9 @@
+import { listAccounts, accountStatistics, getAccount, mutateAccounts, disconnectAccounts, unionAccounts } from '../services/accountService.js';
 import express from 'express';
-import { User, getUserModelByRole, findUserByEmail, findUserById } from '../models/User.js';
+import { User, getUserModelByRole, findUserByEmail } from '../models/User.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import { validateUserUpdate, validatePasswordChange } from '../validators/userValidators.js';
+import { validatePasswordChange } from '../validators/userValidators.js';
 
 const router = express.Router();
 
@@ -58,287 +59,21 @@ router.patch('/password', authenticate, asyncHandler(async (req, res) => {
   res.json({ message: 'Password updated successfully' });
 }));
 
-// Get all users (admin only)
-router.get('/', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const {
-    role,
-    department,
-    isActive,
-    page = 1,
-    limit = 10,
-    search
-  } = req.query;
-
-  // Build filter object
-  const filter = {};
-  if (role) filter.role = role;
-  if (department) filter.department = department;
-  if (isActive !== undefined) filter.isActive = isActive === 'true';
-
-  // Add search functionality
-  if (search) {
-    filter.$or = [
-      { firstName: { $regex: search, $options: 'i' } },
-      { lastName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } }
-    ];
-  }
-
-  const skip = (parseInt(page) - 1) * parseInt(limit);
-
-  const users = await User.find(filter)
-    .select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter')
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(parseInt(limit));
-
-  const total = await User.countDocuments(filter);
-
-  res.json({
-    users,
-    pagination: {
-      current: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit)),
-      total
-    }
-  });
+// All account-management paths share collection-aware lookup and mutation rules.
+router.get(['/', '/all'], authenticate, authorize('admin'), asyncHandler(async (req, res) => {
+  res.json(await listAccounts(req.query));
 }));
-
-// Get user by ID (admin only)
-router.get('/:id', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter');
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-  res.json(user);
-}));
-
-// Update user (admin only)
-router.patch('/:id', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { error } = validateUserUpdate(req.body);
-  if (error) {
-    return res.status(400).json({ error: error.details[0].message });
-  }
-
-  const allowedUpdates = ['firstName', 'lastName', 'email', 'role', 'department', 'isActive', 'profile', 'preferences'];
-  const updates = Object.keys(req.body);
-  const isValidOperation = updates.every(update => allowedUpdates.includes(update));
-
-  if (!isValidOperation) {
-    return res.status(400).json({ error: 'Invalid updates' });
-  }
-
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    updates.forEach(update => {
-      if (update === 'profile' || update === 'preferences') {
-        user[update] = { ...user[update], ...req.body[update] };
-      } else {
-        user[update] = req.body[update];
-      }
-    });
-
-    await user.save();
-    res.json(user);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-}));
-
-// Delete user (admin only)
-router.delete('/:id', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  // Don't allow deletion of the last admin
-  if (user.role === 'admin') {
-    const adminCount = await User.countDocuments({ role: 'admin', isActive: true });
-    if (adminCount <= 1) {
-      return res.status(400).json({ error: 'Cannot delete the last admin user' });
-    }
-  }
-
-  // Soft delete by setting isActive to false
-  user.isActive = false;
-  await user.save();
-
-  res.json({ message: 'User deactivated successfully' });
-}));
-
-// Get agents by department (admin only)
-router.get('/agents/:department', authenticate, authorize('admin', 'agent'), asyncHandler(async (req, res) => {
-  const { department } = req.params;
-  
-  const agents = await User.find({
-    role: 'agent',
-    department,
-    isActive: true
-  }).select('firstName lastName email department');
-
-  res.json(agents);
-}));
-
-// Get all users with pagination and filtering (admin only)
-router.get('/all', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { 
-    page = 1, 
-    limit = 10, 
-    role, 
-    isActive, 
-    department,
-    search,
-    sortBy = 'createdAt',
-    sortOrder = 'desc'
-  } = req.query;
-
-  // Build filter object
-  const filter = {};
-  if (role) filter.role = role;
-  if (isActive !== undefined) filter.isActive = isActive === 'true';
-  if (department) filter.department = department;
-  
-  // Search functionality
-  if (search) {
-    filter.$or = [
-      { firstName: { $regex: search, $options: 'i' } },
-      { lastName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } }
-    ];
-  }
-
-  // Calculate pagination
-  const skip = (parseInt(page) - 1) * parseInt(limit);
-
-  // Build sort object
-  const sort = {};
-  sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
-
-  const users = await User.find(filter)
-    .select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpire -tokensValidAfter')
-    .sort(sort)
-    .skip(skip)
-    .limit(parseInt(limit));
-
-  const total = await User.countDocuments(filter);
-
-  res.json({
-    users,
-    pagination: {
-      current: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit)),
-      total
-    }
-  });
-}));
-
-// Create new user (admin only)
-router.post('/create', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { name, firstName, lastName, email, password, role = 'user', department, organization } = req.body;
-  const fullName = name || [firstName, lastName].filter(Boolean).join(' ');
-  if (!fullName || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || typeof password !== 'string' || password.length < 12 || !['user','agent','analytics','admin'].includes(role)) return res.status(400).json({ error: 'Valid name, email, role and password of at least 12 characters required' });
-  if ((await findUserByEmail(email)).user) return res.status(409).json({ error: 'Email already registered' });
-  const Model = getUserModelByRole(role);
-  const user = await Model.create({ name: fullName, email: email.toLowerCase().trim(), username: await Model.generateUsername(email, fullName), password, role, department, organization, isVerified: true });
-  res.status(201).json({ message: 'User created successfully', user: { id: user._id, name: user.name, email: user.email, role: user.role } });
-}));
-
-// Bulk user operations (admin only)
-router.patch('/bulk/activate', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { userIds, isActive } = req.body;
-
-  if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-    return res.status(400).json({ error: 'Please provide user IDs' });
-  }
-
-  const result = await User.updateMany(
-    { _id: { $in: userIds } },
-    { isActive: isActive !== false, updatedAt: new Date() }
-  );
-
-  res.json({
-    message: `${result.modifiedCount} users ${isActive !== false ? 'activated' : 'deactivated'} successfully`,
-    modifiedCount: result.modifiedCount
-  });
-}));
-
-// Update user role (admin only)
-router.patch('/:id/role', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const { role, department } = req.body;
-
-  if (!['user', 'agent', 'admin'].includes(role)) {
-    return res.status(400).json({ error: 'Invalid role' });
-  }
-
-  const user = await User.findById(req.params.id);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  user.role = role;
-  if (department) user.department = department;
-  user.updatedAt = new Date();
-
-  await user.save();
-
-  const userResponse = user.toObject();
-  delete userResponse.password;
-
-  res.json({
-    message: 'User role updated successfully',
-    user: userResponse
-  });
-}));
-
-// Get user statistics (admin only)
 router.get('/stats/overview', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
-  const [
-    totalUsers,
-    activeUsers,
-    usersByRole,
-    recentUsers
-  ] = await Promise.all([
-    User.countDocuments(),
-    User.countDocuments({ isActive: true }),
-    User.aggregate([
-      { $group: { _id: '$role', count: { $sum: 1 } } }
-    ]),
-    User.countDocuments({
-      createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
-    })
-  ]);
-
-  const roleStats = usersByRole.reduce((acc, item) => {
-    acc[item._id] = item.count;
-    return acc;
-  }, {});
-
-  res.json({
-    totalUsers,
-    activeUsers,
-    inactiveUsers: totalUsers - activeUsers,
-    recentUsers,
-    roleBreakdown: {
-      users: roleStats.user || 0,
-      agents: roleStats.agent || 0,
-      admins: roleStats.admin || 0
-    }
-  });
+  res.json(await accountStatistics());
 }));
 
-// Get agent performance metrics (admin only)
 router.get('/agents/performance', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
   const { timeRange = '30' } = req.query;
   const days = parseInt(timeRange);
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - days);
 
-  const agentPerformance = await User.aggregate([
+  const agentPerformance = await User.aggregate([...unionAccounts(),
     { $match: { role: 'agent', isActive: true } },
     {
       $lookup: {
@@ -373,8 +108,7 @@ router.get('/agents/performance', authenticate, authorize('admin'), asyncHandler
     },
     {
       $project: {
-        firstName: 1,
-        lastName: 1,
+        name: 1,
         email: 1,
         department: 1,
         totalAssigned: { $size: '$assignedComplaints' },
@@ -399,4 +133,43 @@ router.get('/agents/performance', authenticate, authorize('admin'), asyncHandler
   res.json(agentPerformance);
 }));
 
+router.get('/agents/:department', authenticate, authorize('admin', 'agent'), asyncHandler(async (req, res) => {
+  const result = await listAccounts({ role: 'agent', department: req.params.department, isActive: 'true', limit: 100 });
+  res.json(result.users.map(({_id,name,email,department})=>({_id,name,email,department})));
+}));
+router.post('/create', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
+  const { name, firstName, lastName, email, password, role = 'user', department, organization } = req.body;
+  const fullName = name || [firstName, lastName].filter(Boolean).join(' ');
+  if (typeof fullName !== 'string' || fullName.trim().length < 2 || fullName.length > 100 || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || typeof password !== 'string' || password.length < 12 || password.length > 72 || !['user','agent','analytics','admin'].includes(role)) return res.status(400).json({ error: 'Valid name, email, role and password of 12–72 characters required' });
+  if ((await findUserByEmail(email)).user) return res.status(409).json({ error: 'Email already registered' });
+  const Model = getUserModelByRole(role);
+  const user = await Model.create({ name: fullName.trim(), email: email.toLowerCase().trim(), username: await Model.generateUsername(email, fullName), password, role, department, organization, isVerified: true });
+  res.status(201).json({ message: 'User created successfully', user: user.toJSON() });
+}));
+router.patch('/bulk/activate', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
+  if (typeof req.body.isActive !== 'boolean') return res.status(400).json({ error: 'isActive must be a boolean' });
+  const users = await mutateAccounts(req.body.userIds, { isActive: req.body.isActive }, req.user._id);
+  disconnectAccounts(req.app.get('io'), users.map(user=>user._id));
+  res.json({ message: 'Account access updated', modifiedCount: users.length });
+}));
+router.patch('/:id/role', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
+  const { role, department } = req.body;
+  const users = await mutateAccounts([req.params.id], { role, ...(department !== undefined ? { department } : {}) }, req.user._id);
+  disconnectAccounts(req.app.get('io'), [req.params.id]);
+  res.json({ message: 'User role updated successfully', user: users[0] });
+}));
+router.get('/:id', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
+  const { user } = await getAccount(req.params.id);
+  res.json(user);
+}));
+router.patch('/:id', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
+  const users = await mutateAccounts([req.params.id], req.body, req.user._id);
+  disconnectAccounts(req.app.get('io'), [req.params.id]);
+  res.json(users[0]);
+}));
+router.delete('/:id', authenticate, authorize('admin'), asyncHandler(async (req, res) => {
+  await mutateAccounts([req.params.id], { isActive: false }, req.user._id);
+  disconnectAccounts(req.app.get('io'), [req.params.id]);
+  res.json({ message: 'User deactivated successfully' });
+}));
 export default router;
