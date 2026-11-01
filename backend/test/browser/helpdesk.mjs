@@ -5,6 +5,7 @@ import jwt from "jsonwebtoken";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
+let reviewPage;
 async function main() {
   const mongo = await MongoMemoryReplSet.create({
     binary: { version: "7.0.14" },
@@ -108,6 +109,7 @@ async function main() {
     author: user._id,
   });
   await import("../../src/server.js");
+  process.chdir(new URL("../../../frontend", import.meta.url).pathname);
   const { createServer } = await import(
     "../../../frontend/node_modules/vite/dist/node/index.js"
   );
@@ -126,6 +128,7 @@ async function main() {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
   });
+  reviewPage = page;
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const access = jwt.sign(
@@ -229,7 +232,8 @@ async function main() {
 }
 main()
   .then(() => process.exit(0))
-  .catch((error) => {
+  .catch(async (error) => {
+    await reviewPage?.screenshot({path: "/tmp/quickfix-browser-failure.png", fullPage: true}).catch(() => {});
     console.error(error);
     process.exit(1);
   });
