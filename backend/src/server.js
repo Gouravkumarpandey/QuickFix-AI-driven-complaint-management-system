@@ -1,3 +1,12 @@
+import {assertMFA} from './helpdesk/security.js';
+import analyticsWorkspaceRoutes from './helpdesk/analytics.js';
+import {securityRoutes,enterpriseSecurityRoutes,ssoPublicRoutes} from './helpdesk/security.js';
+import indiaBillingRoutes,{razorpayWebhook} from './helpdesk/indiaBilling.js';
+import mailboxRoutes from './helpdesk/mailbox.js';
+import {semanticRoutes,publicAIRoutes} from './helpdesk/semantic.js';
+import migrationRoutes from './helpdesk/migration.js';
+import {channelAdmin,voiceRoutes,socialRoutes} from './helpdesk/omnichannel.js';
+import readinessRoutes,{readiness} from './helpdesk/readiness.js';
 import { keyRoutes, developerRoutes } from './helpdesk/developer.js';
 import commerceRoutes from './helpdesk/commerce.js';
 import helpdeskRoutes from './helpdesk/routes.js';
@@ -243,6 +252,7 @@ io.use(async (socket, next) => {
         return next(new Error("Authentication failed: User not found"));
       }
 
+      await assertMFA(user,decoded);
       // Update socket tracking
       connectedSockets.set(socketId, {
         ip: clientIp,
@@ -269,6 +279,7 @@ io.use(async (socket, next) => {
           const claims = verifyToken(socketAuthToken);
           const { user: current } = await findUserById(claims.id);
           if (!sessionAllowed(current, claims)) throw new Error('Session revoked');
+          await assertMFA(current,claims);
           socket.user = current;
           done();
         } catch { socket.disconnect(true); done(new Error('Session expired or revoked')); }
@@ -417,6 +428,9 @@ app.use(morgan(':remote-addr :method :safe-url :status :res[content-length] - :r
 app.use(cookieParser());
 app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), webhookHandler);
 app.use('/api/channels', channelRoutes);
+app.use('/api/razorpay/webhook',razorpayWebhook);
+app.use('/api/social',socialRoutes);
+app.use('/api/voice',voiceRoutes);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -469,8 +483,12 @@ app.use("/api/sms", smsRoutes);
 // app.use("/api/admin", cacheRoutes); // Redis cache routes disabled
 
 app.use('/api/workspaces', helpdeskRoutes, connectorRoutes, billingRoutes, attachmentRoutes, helpdeskAI, commerceRoutes, keyRoutes);
+app.use('/api/workspaces',analyticsWorkspaceRoutes,enterpriseSecurityRoutes,indiaBillingRoutes,mailboxRoutes,semanticRoutes,migrationRoutes,channelAdmin,readinessRoutes);
+app.use('/api/security',securityRoutes);
+app.use('/api/sso',ssoPublicRoutes);
+app.get('/api/ready', async(req,res,next)=>{try{const state=await readiness();res.status(state.ready?200:503).json(state);}catch(error){next(error);}});
 app.use('/api/developer', developerRoutes);
-app.use('/api/help', portalRoutes);
+app.use('/api/help', publicAIRoutes,portalRoutes);
 
 // CSP violation reporting endpoint
 app.post("/api/csp-report", express.json({ type: 'application/csp-report' }), cspReportHandler);

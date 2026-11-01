@@ -5,7 +5,13 @@ import express from "express";
 import Joi from "joi";
 import { asyncHandler as wrap } from "../middleware/errorHandler.js";
 import { authenticate } from "../middleware/auth.js";
-import { Connector, Message, Ticket, Contact } from "./models.js";
+import {
+  Connector,
+  Message,
+  Ticket,
+  Contact,
+  ChannelIdentity,
+} from "./models.js";
 import { workspaceAccess, permit, objectId, inWorkspace } from "./access.js";
 import { fail, validate, text } from "./validation.js";
 import { createTicket, addMessage, digest } from "./tickets.js";
@@ -117,18 +123,16 @@ connectorRoutes.post(
         fromAddress: input.fromAddress,
       },
     });
-    res
-      .status(201)
-      .json({
-        id: connector._id,
-        ...(["email", "whatsapp"].includes(input.kind)
-          ? { webhookPath: `/api/channels/${connector._id}` }
-          : {}),
-        ...(["email", "webhook"].includes(input.kind)
-          ? { webhookSecret: secret }
-          : {}),
-        ...(input.kind === "whatsapp" ? { verifyToken } : {}),
-      });
+    res.status(201).json({
+      id: connector._id,
+      ...(["email", "whatsapp"].includes(input.kind)
+        ? { webhookPath: `/api/channels/${connector._id}` }
+        : {}),
+      ...(["email", "webhook"].includes(input.kind)
+        ? { webhookSecret: secret }
+        : {}),
+      ...(input.kind === "whatsapp" ? { verifyToken } : {}),
+    });
   }),
 );
 connectorRoutes.patch(
@@ -148,7 +152,23 @@ connectorRoutes.patch(
     res.json({ id: connector._id, enabled: connector.enabled });
   }),
 );
-async function receive(connector, input) {
+export async function receive(connector, input) {
+  const externalCustomer = input.phone || input.threadId;
+  if (externalCustomer) {
+    const identity = await ChannelIdentity.findOne({
+      workspace: connector.workspace,
+      connector: connector._id,
+      externalCustomer,
+    });
+    if (identity) {
+      const contact = await Contact.findOne({
+        _id: identity.contact,
+        workspace: connector.workspace,
+      });
+      if (contact) input = { ...input, email: contact.email };
+    }
+  }
+
   try {
     return await inWorkspace(
       connector.workspace,
@@ -242,7 +262,7 @@ channelRoutes.post(
     const connector = await Connector.findOne({
       _id: objectId(req.params.connectorId),
       enabled: true,
-    }).select("+secret");
+    }).select("+secret +token");
     if (!connector || !["email", "whatsapp"].includes(connector.kind))
       throw fail("Channel not found", 404);
     if (
@@ -288,7 +308,7 @@ channelRoutes.post(
         )
           continue;
         for (const message of value.messages || []) {
-          if (message.type !== "text") continue;
+          if (!["text", "image", "document"].includes(message.type)) continue;
           const phone = String(message.from);
           if (!/^\d{8,15}$/.test(phone)) continue;
           await receive(connector, {
@@ -298,8 +318,29 @@ channelRoutes.post(
             phone,
             name: value.contacts?.[0]?.profile?.name || phone,
             subject: "WhatsApp support request",
-            description: String(message.text?.body || "").slice(0, 10000),
+            description: String(
+              message.text?.body ||
+                message[message.type]?.caption ||
+                "Incoming WhatsApp attachment",
+            ).slice(0, 10000),
           });
+          if (
+            message.type !== "text" &&
+            /^\d+$/.test(String(message[message.type]?.id || ""))
+          ) {
+            const { enqueue } = await import("./tickets.js");
+            await enqueue(
+              connector.workspace,
+              "media.inbound",
+              {
+                connector: connector._id,
+                externalId: message.id,
+                mediaId: message[message.type].id,
+                filename: message[message.type].filename,
+              },
+              `media:${connector._id}:${message.id}`,
+            );
+          }
         }
       }
     res.json({ received: true });

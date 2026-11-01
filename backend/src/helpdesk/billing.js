@@ -1,4 +1,5 @@
 import express from "express";
+import { reconcileSeats } from "./entitlements.js";
 import Joi from "joi";
 import { stripe } from "../services/stripeClient.js";
 import { authenticate } from "../middleware/auth.js";
@@ -42,6 +43,11 @@ export async function syncWorkspaceSubscription(subscription) {
       },
     },
   );
+  const current = await Workspace.findById(workspaceId);
+  if (current)
+    await inWorkspace(workspaceId, (session, workspace) =>
+      reconcileSeats(workspace, session),
+    );
 }
 export async function processWorkspaceCheckout(client, checkout) {
   const workspaceId = checkout.metadata?.workspaceId;

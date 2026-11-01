@@ -1,4 +1,8 @@
-import test from 'node:test';
+import test, {before,after} from 'node:test';
+import {SecurityProfile} from '../src/helpdesk/models.js';
+const originalMfaRead=SecurityProfile.findOne;
+before(()=>{SecurityProfile.findOne=()=>({lean:async()=>null});});
+after(()=>{SecurityProfile.findOne=originalMfaRead;});
 import assert from 'node:assert/strict';
 import jwt from 'jsonwebtoken';
 import express from 'express';

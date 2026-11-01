@@ -76,7 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Only clear auth data for unauthorized errors
         if (
           isAxiosError(error) &&
-          (error.response?.status === 401 || error.response?.status === 403)
+          (error.response?.status === 401 || (error.response?.status === 403 && (error.response?.data as {code?:string})?.code !== "MFA_REQUIRED"))
         ) {
           tokenService.clearAuthData();
           setUser(null);

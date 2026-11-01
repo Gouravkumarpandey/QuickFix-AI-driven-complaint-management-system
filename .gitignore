@@ -38,3 +38,4 @@ Thumbs.db
 
 private-uploads/
 backend/private-uploads/
+/deploy/.env

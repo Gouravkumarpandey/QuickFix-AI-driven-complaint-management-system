@@ -1,3 +1,45 @@
+import analyticsEnterprise from "../../src/helpdesk/analytics.js";
+import {
+  securityRoutes,
+  enterpriseSecurityRoutes,
+  totp,
+  base32,
+} from "../../src/helpdesk/security.js";
+import indiaBillingEnterprise, {
+  applyPayment,
+  amounts,
+  secureHex,
+} from "../../src/helpdesk/indiaBilling.js";
+import mailboxEnterprise, {
+  importRawMail,
+} from "../../src/helpdesk/mailbox.js";
+import {
+  semanticRoutes,
+  publicAIRoutes,
+  indexKnowledge,
+  semanticSearch,
+  faqAnswer,
+} from "../../src/helpdesk/semantic.js";
+import migrationEnterprise from "../../src/helpdesk/migration.js";
+import {
+  channelAdmin,
+  socialRoutes,
+  voiceRoutes,
+} from "../../src/helpdesk/omnichannel.js";
+import {
+  reconcileSeats,
+  seatAllowed,
+} from "../../src/helpdesk/entitlements.js";
+import {
+  SecurityProfile,
+  CustomRole,
+  BillingOrder,
+  Embedding,
+  AIEvaluation,
+  Attachment,
+} from "../../src/helpdesk/models.js";
+import { Complaint } from "../../src/models/Complaint.js";
+import twilio from "twilio";
 import { keyRoutes, developerRoutes } from "../../src/helpdesk/developer.js";
 import commerceRoutes from "../../src/helpdesk/commerce.js";
 import test, { before, after, beforeEach } from "node:test";
@@ -100,6 +142,8 @@ before(async () => {
   );
   const app = express();
   app.use("/channels", channelRoutes);
+  app.use("/social", socialRoutes);
+  app.use("/voice", voiceRoutes);
   app.use(express.json());
   app.use((req, res, next) => {
     req.cookies = {};
@@ -115,8 +159,19 @@ before(async () => {
     keyRoutes,
     commerceRoutes,
   );
+  app.use(
+    "/workspaces",
+    analyticsEnterprise,
+    enterpriseSecurityRoutes,
+    indiaBillingEnterprise,
+    mailboxEnterprise,
+    semanticRoutes,
+    migrationEnterprise,
+    channelAdmin,
+  );
+  app.use("/security", securityRoutes);
   app.use("/developer", developerRoutes);
-  app.use("/help", portal);
+  app.use("/help", publicAIRoutes, portal);
   app.use((error, req, res, next) =>
     res.status(error.statusCode || 400).json({ error: error.message }),
   );
@@ -982,4 +1037,742 @@ test("SLA batches progress past reported breaches and abandoned final deliveries
   });
   await drainJobs({}, 1);
   assert.equal((await Job.findById(job._id)).state, "failed");
+});
+
+const upgrade = async (workspace, plan = "Premium", seats = 6) =>
+  Workspace.updateOne(
+    { _id: workspace._id },
+    {
+      $set: {
+        billing: {
+          plan,
+          seats,
+          status: "active",
+          expiresAt: new Date(Date.now() + 86400000),
+        },
+      },
+    },
+  );
+test("operations metrics ignore other companies, handle missing due dates and filter role data", async () => {
+  const first = await createTicket(alice, a);
+  await createTicket(bob, b);
+  let metrics = await body(
+    await call(alice, `/workspaces/${a._id}/operations`),
+  );
+  assert.equal(metrics.summary.total, 1);
+  assert.equal(metrics.summary.overdue, 0);
+  await Ticket.updateOne(
+    { _id: first._id },
+    { $set: { "sla.firstDue": new Date(Date.now() - 60000) } },
+  );
+  metrics = await body(await call(alice, `/workspaces/${a._id}/operations`));
+  assert.equal(metrics.summary.overdue, 1);
+  assert.equal(
+    (await call(bob, `/workspaces/${a._id}/operations`)).status,
+    404,
+  );
+  assert.equal(
+    (await call(alice, `/workspaces/${a._id}/operations?days=900`)).status,
+    400,
+  );
+  const list = await body(
+    await call(alice, `/workspaces/${a._id}/tickets?bucket=overdue`),
+  );
+  assert.equal(list.total, 1);
+  assert.equal(
+    (
+      await call(alice, `/workspaces/${a._id}/dashboards`, "POST", {
+        name: "My dashboard",
+        widgets: ["summary", "agents"],
+        days: 7,
+      })
+    ).status,
+    402,
+  );
+  await upgrade(a);
+  const dashboard = await body(
+    await call(alice, `/workspaces/${a._id}/dashboards`, "POST", {
+      name: "Team overview",
+      widgets: ["summary", "agents"],
+      days: 7,
+    }),
+  );
+  assert.equal(
+    (
+      await call(
+        bob,
+        `/workspaces/${b._id}/dashboards/${dashboard._id}`,
+        "DELETE",
+      )
+    ).status,
+    404,
+  );
+});
+test("MFA enrollment, recovery, replay resistance and existing sessions are enforced", async () => {
+  const enrollment = await body(
+    await call(alice, "/security/mfa/enroll", "POST", {}),
+  );
+  assert.ok(enrollment.qr.startsWith("data:image/png;base64,"));
+  const confirmed = await body(
+    await call(alice, "/security/mfa/confirm", "POST", {
+      code: totp(enrollment.secret),
+    }),
+  );
+  assert.equal(confirmed.recoveryCodes.length, 10);
+  assert.equal((await call(alice, `/workspaces/${a._id}`)).status, 403);
+  assert.equal(
+    (
+      await call(alice, `/workspaces/${a._id}`, "GET", undefined, {
+        Authorization: "Bearer " + confirmed.token,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call(alice, "/security/mfa/verify", "POST", {
+        code: totp(enrollment.secret),
+      })
+    ).status,
+    401,
+  );
+  const recovery = confirmed.recoveryCodes[0];
+  await body(
+    await call(alice, "/security/mfa/verify", "POST", { code: recovery }),
+  );
+  assert.equal(
+    (await call(alice, "/security/mfa/verify", "POST", { code: recovery }))
+      .status,
+    401,
+  );
+  assert.equal(
+    (await call(alice, "/security/mfa/disable", "POST", { code: "000000" }))
+      .status,
+    401,
+  );
+  await body(
+    await call(alice, "/security/mfa/disable", "POST", {
+      code: confirmed.recoveryCodes[1],
+    }),
+  );
+  assert.equal((await call(alice, `/workspaces/${a._id}`)).status, 200);
+});
+test("custom restrictions narrow base roles without granting owner access", async () => {
+  assert.equal(
+    (
+      await call(alice, `/workspaces/${a._id}/roles`, "POST", {
+        name: "Read tickets",
+        permissions: ["tickets.read"],
+      })
+    ).status,
+    402,
+  );
+  await upgrade(a);
+  await invite(alice, a, carol, "agent");
+  const role = await body(
+    await call(alice, `/workspaces/${a._id}/roles`, "POST", {
+      name: "Read tickets",
+      permissions: ["tickets.read"],
+    }),
+  );
+  const member = await Membership.findOne({
+    workspace: a._id,
+    user: carol._id,
+  });
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/roles/assign/${member._id}`,
+      "PATCH",
+      { roleId: role._id },
+    ),
+  );
+  assert.equal((await call(carol, `/workspaces/${a._id}`)).status, 200);
+  assert.equal((await call(carol, `/workspaces/${a._id}/tickets`)).status, 200);
+  assert.equal(
+    (
+      await call(carol, `/workspaces/${a._id}/tickets`, "POST", {
+        subject: "Should fail",
+        description: "Read only",
+        email: carol.email,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await call(carol, `/workspaces/${a._id}/operations`)).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(
+        alice,
+        `/workspaces/${a._id}/roles/assign/${member._id}`,
+        "PATCH",
+        { roleId: String(new mongoose.Types.ObjectId()) },
+      )
+    ).status,
+    404,
+  );
+});
+test("expired plans suspend excess seats immediately and restore them on upgrade", async () => {
+  await upgrade(a);
+  await invite(alice, a, bob, "agent");
+  await invite(alice, a, carol, "agent");
+  const member = await Membership.findOne({
+      workspace: a._id,
+      user: carol._id,
+    }),
+    ticket = await createTicket(alice, a);
+  await Ticket.updateOne(
+    { _id: ticket._id },
+    { $set: { assignedTo: member._id } },
+  );
+  await Workspace.updateOne(
+    { _id: a._id },
+    { $set: { "billing.expiresAt": new Date(Date.now() - 1000) } },
+  );
+  assert.equal((await call(carol, `/workspaces/${a._id}`)).status, 403);
+  const workspace = await Workspace.findById(a._id);
+  await reconcileSeats(workspace);
+  assert.equal(
+    (await Membership.findById(member._id)).entitlementSuspended,
+    true,
+  );
+  assert.equal((await Ticket.findById(ticket._id)).assignedTo, undefined);
+  assert.equal((await call(alice, `/workspaces/${a._id}`)).status, 200);
+  await upgrade(a);
+  await reconcileSeats(await Workspace.findById(a._id));
+  assert.equal((await call(carol, `/workspaces/${a._id}`)).status, 200);
+});
+test("captured INR payments are amount-bound, idempotent and invoice-isolated", async () => {
+  const customer = {
+      name: "Buyer",
+      address: "Fixture address",
+      stateCode: "20",
+    },
+    seller = {
+      name: "QuickFix",
+      address: "Fixture seller address",
+      stateCode: "20",
+      gstin: "20AAAAA0000A1Z5",
+    };
+  const values = amounts(100001, 1800, "20", "20");
+  assert.equal(values.cgst + values.sgst, values.tax);
+  assert.equal(values.igst, 0);
+  assert.equal(amounts(10000, 1800, "20", "19").igst, 1800);
+  const row = await BillingOrder.create({
+    workspace: a._id,
+    orderId: "order_fixture",
+    receipt: "QF-TEST",
+    plan: "Pro",
+    seats: 4,
+    ...values,
+    taxRate: 1800,
+    customer,
+    seller,
+  });
+  const payment = {
+    id: "pay_fixture",
+    order_id: row.orderId,
+    status: "captured",
+    amount: row.total,
+    currency: "INR",
+  };
+  await assert.rejects(applyPayment(row, { ...payment, amount: 1 }));
+  await assert.rejects(applyPayment(row, { ...payment, status: "authorized" }));
+  await applyPayment(row, payment);
+  const expires = (await Workspace.findById(a._id)).billing.expiresAt.getTime();
+  await applyPayment(row, payment);
+  assert.equal(
+    (await Workspace.findById(a._id)).billing.expiresAt.getTime(),
+    expires,
+  );
+  assert.equal(
+    (await call(bob, `/workspaces/${b._id}/billing/india/invoices/${row._id}`))
+      .status,
+    404,
+  );
+  const invoice = await body(
+    await call(alice, `/workspaces/${a._id}/billing/india/invoices/${row._id}`),
+  );
+  assert.equal(invoice.invoiceType, "Tax invoice draft");
+  assert.equal(invoice.total, values.total);
+  assert.equal(secureHex("secret", "order|payment", "0".repeat(64)), false);
+});
+test("HTML email becomes plain text and scanner-approved attachments stay private and deduplicated", async () => {
+  const fs = await import("node:fs/promises"),
+    os = await import("node:os"),
+    path = await import("node:path"),
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "quickfix-mail-"));
+  process.env.PRIVATE_UPLOAD_DIR = dir;
+  try {
+    const connection = await Connector.create({
+        workspace: a._id,
+        kind: "email",
+        name: "Mailbox",
+      }),
+      raw = Buffer.from(
+        "From: Buyer <buyer@example.com>\r\nTo: support@example.com\r\nMessage-ID: <fixture-mail@example.com>\r\nSubject: HTML mail\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=fixture\r\n\r\n--fixture\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hello <strong>support</strong></p><script>alert(1)</script>\r\n--fixture\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=invoice.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n" +
+          Buffer.from("%PDF-1.4 fixture").toString("base64") +
+          "\r\n--fixture--\r\n",
+      );
+    await importRawMail(connection, raw, { scanner: async () => {} });
+    await importRawMail(connection, raw, { scanner: async () => {} });
+    assert.equal(await Ticket.countDocuments({ workspace: a._id }), 1);
+    assert.equal(await Message.countDocuments({ workspace: a._id }), 1);
+    const message = await Message.findOne({ workspace: a._id });
+    assert.ok(message.text.includes("Hello support"));
+    assert.ok(!message.text.includes("<script>"));
+    assert.equal(await Attachment.countDocuments({ workspace: a._id }), 1);
+    assert.equal(message.attachments.length, 1);
+  } finally {
+    delete process.env.PRIVATE_UPLOAD_DIR;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+test("semantic retrieval filters stale or unpublished articles and rejects unsupported AI answers", async () => {
+  await upgrade(a);
+  process.env.EMBEDDING_MODEL = "fixture-embedding";
+  const article = await Article.create({
+    workspace: a._id,
+    slug: "care",
+    title: "Bracelet care",
+    body: "Clean bracelets with a soft cloth. Keep them dry.",
+    published: true,
+    author: alice._id,
+  });
+  await Article.create({
+    workspace: b._id,
+    slug: "foreign",
+    title: "Foreign secret",
+    body: "Never return this secret",
+    published: true,
+    author: bob._id,
+  });
+  const embedder = async (texts) => texts.map(() => [1, 0]);
+  await indexKnowledge(a._id, embedder);
+  let rows = await semanticSearch(
+    await Workspace.findById(a._id),
+    "How to clean bracelets?",
+    embedder,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(String(rows[0].article), String(article._id));
+  let count = 0;
+  const answer = await faqAnswer(
+    await Workspace.findById(a._id),
+    "How to clean bracelets?",
+    {
+      search: async () => rows,
+      chat: async () => ({
+        success: true,
+        response:
+          ++count === 1
+            ? JSON.stringify({
+                answer: "Use a soft cloth.",
+                citations: [1],
+                supported: true,
+              })
+            : JSON.stringify({ supported: true }),
+      }),
+    },
+  );
+  assert.equal(answer.handoff, false);
+  assert.equal(await AIEvaluation.countDocuments({ workspace: a._id }), 1);
+  const invalid = await faqAnswer(
+    await Workspace.findById(a._id),
+    "How to clean bracelets?",
+    {
+      search: async () => rows,
+      chat: async () => ({
+        success: true,
+        response: '{"answer":"Invented","citations":[99],"supported":true}',
+      }),
+    },
+  );
+  assert.equal(invalid.handoff, true);
+  await Article.updateOne(
+    { _id: article._id },
+    { $set: { body: "Updated policy text" } },
+  );
+  rows = await semanticSearch(
+    await Workspace.findById(a._id),
+    "How to clean?",
+    embedder,
+  );
+  assert.equal(rows.length, 0);
+  delete process.env.EMBEDDING_MODEL;
+});
+test("social inboxes verify signatures, asset ownership and provider retry IDs", async () => {
+  await upgrade(a);
+  const connection = await body(
+    await call(alice, `/workspaces/${a._id}/channels`, "POST", {
+      kind: "messenger",
+      name: "Social inbox",
+      assetId: "123456789",
+      token: "fixture-token",
+      secret: "fixture-secret",
+    }),
+  );
+  const raw = JSON.stringify({
+      entry: [
+        {
+          id: "123456789",
+          messaging: [
+            {
+              sender: { id: "9988776655" },
+              message: {
+                mid: "social-message-1",
+                text: "Please help with my order",
+              },
+            },
+          ],
+        },
+      ],
+    }),
+    signature =
+      "sha256=" +
+      crypto.createHmac("sha256", "fixture-secret").update(raw).digest("hex");
+  const send = (sig) =>
+    fetch(base + "/social/" + connection.id, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": sig,
+      },
+      body: raw,
+    });
+  assert.equal((await send("invalid")).status, 401);
+  assert.equal((await send(signature)).status, 200);
+  assert.equal((await send(signature)).status, 200);
+  assert.equal(
+    await Ticket.countDocuments({ workspace: a._id, channel: "messenger" }),
+    1,
+  );
+});
+test("legacy migration requires record ownership and explicit confirmation and does not duplicate records", async () => {
+  const legacy = await Complaint.create({
+      user: alice._id,
+      title: "Legacy delivery",
+      description: "Import this complaint",
+      category: "Delivery",
+    }),
+    foreign = await Complaint.create({
+      user: bob._id,
+      title: "Private complaint",
+      description: "Do not import",
+      category: "Delivery",
+    });
+  assert.equal(
+    (
+      await call(alice, `/workspaces/${a._id}/migration/preview`, "POST", {
+        ids: [String(foreign._id)],
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(alice, `/workspaces/${a._id}/migration/import`, "POST", {
+        ids: [String(legacy._id)],
+      })
+    ).status,
+    400,
+  );
+  await body(
+    await call(alice, `/workspaces/${a._id}/migration/import`, "POST", {
+      ids: [String(legacy._id)],
+      confirmed: true,
+    }),
+  );
+  const duplicate = await body(
+    await call(alice, `/workspaces/${a._id}/migration/import`, "POST", {
+      ids: [String(legacy._id)],
+      confirmed: true,
+    }),
+  );
+  assert.equal(duplicate.results[0].duplicate, true);
+  assert.equal(
+    await Ticket.countDocuments({ workspace: a._id, legacyId: legacy._id }),
+    1,
+  );
+  assert.ok(await Complaint.exists({ _id: legacy._id }));
+});
+
+test("phone callbacks validate Twilio signatures and return routing instructions without placing a test call", async () => {
+  await upgrade(a);
+  const account = "AC" + "a".repeat(32),
+    authToken = "fixture-twilio-auth-token",
+    connection = await body(
+      await call(alice, `/workspaces/${a._id}/channels`, "POST", {
+        kind: "phone",
+        name: "Support phone",
+        assetId: account,
+        token: authToken,
+        secret: authToken,
+        phoneNumber: "+919000000001",
+        forwardTo: "+919000000002",
+      }),
+    );
+  const previous = process.env.BACKEND_URL;
+  process.env.BACKEND_URL = base;
+  try {
+    const params = {
+        AccountSid: account,
+        CallSid: "CA" + "b".repeat(32),
+        From: "+919000000003",
+        To: "+919000000001",
+      },
+      url = base + "/voice/" + connection.id,
+      signature = twilio.getExpectedTwilioSignature(authToken, url, params);
+    const send = (sig) =>
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Twilio-Signature": sig,
+        },
+        body: new URLSearchParams(params),
+      });
+    assert.equal((await send("bad")).status, 401);
+    const result = await send(signature);
+    assert.equal(result.status, 200);
+    assert.ok((await result.text()).includes("<Dial>+919000000002</Dial>"));
+    assert.equal((await send(signature)).status, 200);
+    assert.equal(
+      await Ticket.countDocuments({ workspace: a._id, channel: "phone" }),
+      1,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.BACKEND_URL;
+    else process.env.BACKEND_URL = previous;
+  }
+});
+test("WhatsApp templates use the durable outbox and private attachments cannot be sent", async () => {
+  const connection = await body(
+      await call(alice, `/workspaces/${a._id}/connectors`, "POST", {
+        kind: "whatsapp",
+        name: "WhatsApp",
+        token: "fixture-token",
+        appSecret: "fixture-app-secret",
+        phoneNumberId: "123456789",
+      }),
+    ),
+    raw = JSON.stringify({
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: "123456789" },
+                contacts: [{ profile: { name: "Buyer" } }],
+                messages: [
+                  {
+                    id: "wa-fixture-message",
+                    from: "919000000000",
+                    type: "text",
+                    text: { body: "Hello support" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    }),
+    signature =
+      "sha256=" +
+      crypto
+        .createHmac("sha256", "fixture-app-secret")
+        .update(raw)
+        .digest("hex");
+  assert.equal(
+    (
+      await fetch(base + "/channels/" + connection.id, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Hub-Signature-256": signature,
+        },
+        body: raw,
+      })
+    ).status,
+    200,
+  );
+  const ticket = await Ticket.findOne({
+    workspace: a._id,
+    channel: "whatsapp",
+  });
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/tickets/${ticket._id}/whatsapp`,
+      "POST",
+      {
+        template: {
+          name: "approved_order_update",
+          language: "en",
+          parameters: ["Buyer"],
+        },
+      },
+    ),
+  );
+  let requests = 0;
+  await drainJobs(
+    {
+      fetcher: async (url, request) => {
+        requests++;
+        const payload = JSON.parse(request.body);
+        assert.equal(payload.type, "template");
+        assert.equal(payload.to, "919000000000");
+        assert.equal(
+          payload.template.components[0].parameters[0].text,
+          "Buyer",
+        );
+        return { ok: true };
+      },
+    },
+    10,
+  );
+  assert.equal(requests, 1);
+  const file = await Attachment.create({
+    workspace: a._id,
+    ticket: ticket._id,
+    name: "private.pdf",
+    mime: "application/pdf",
+    size: 10,
+    internal: true,
+    storageKey: "not-read",
+    uploadedBy: alice._id,
+  });
+  assert.equal(
+    (
+      await call(
+        alice,
+        `/workspaces/${a._id}/tickets/${ticket._id}/whatsapp`,
+        "POST",
+        { attachmentId: String(file._id) },
+      )
+    ).status,
+    404,
+  );
+});
+
+test("custom roles enforce normalized workspace IDs and root settings writes", async () => {
+  await upgrade(a);
+  await invite(alice, a, carol, "admin");
+  const role = await body(
+      await call(alice, `/workspaces/${a._id}/roles`, "POST", {
+        name: "Ticket-only admin",
+        permissions: ["tickets.read"],
+      }),
+    ),
+    member = await Membership.findOne({ workspace: a._id, user: carol._id });
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/roles/assign/${member._id}`,
+      "PATCH",
+      { roleId: role._id },
+    ),
+  );
+  assert.equal(
+    (
+      await call(
+        carol,
+        `/workspaces/${String(a._id).toUpperCase()}/tickets`,
+        "POST",
+        {
+          subject: "Forbidden",
+          description: "Must not bypass",
+          email: carol.email,
+        },
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(carol, `/workspaces/${a._id}`, "PATCH", {
+        settings: { language: "hi" },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await call(carol, `/workspaces/${String(a._id).toUpperCase()}/tickets`))
+      .status,
+    200,
+  );
+});
+test("an obsolete outbox lease cannot overwrite a delivery claimed by another worker", async () => {
+  await body(
+    await call(alice, `/workspaces/${a._id}/connectors`, "POST", {
+      kind: "slack",
+      name: "Alerts",
+      slackUrl: "https://hooks.slack.com/services/T/B/token",
+    }),
+  );
+  await createTicket(alice, a);
+  const job = await Job.findOne({ workspace: a._id });
+  await drainJobs(
+    {
+      fetcher: async () => {
+        await Job.updateOne(
+          { _id: job._id },
+          { $set: { leaseToken: "replacement-worker", state: "processing" } },
+        );
+        return { ok: true };
+      },
+    },
+    1,
+  );
+  const current = await Job.findById(job._id);
+  assert.equal(current.leaseToken, "replacement-worker");
+  assert.equal(current.state, "processing");
+});
+
+test("custom role edits apply immediately and assigned roles cannot be deleted", async () => {
+  await upgrade(a);
+  await invite(alice, a, carol, "agent");
+  const role = await body(
+      await call(alice, `/workspaces/${a._id}/roles`, "POST", {
+        name: "Temporary reader",
+        permissions: ["tickets.read"],
+      }),
+    ),
+    member = await Membership.findOne({ workspace: a._id, user: carol._id });
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/roles/assign/${member._id}`,
+      "PATCH",
+      { roleId: role._id },
+    ),
+  );
+  assert.equal(
+    (await call(alice, `/workspaces/${a._id}/roles/${role._id}`, "DELETE"))
+      .status,
+    409,
+  );
+  await body(
+    await call(alice, `/workspaces/${a._id}/roles/${role._id}`, "PATCH", {
+      permissions: [],
+    }),
+  );
+  assert.equal((await call(carol, `/workspaces/${a._id}/tickets`)).status, 403);
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/roles/assign/${member._id}`,
+      "PATCH",
+      { roleId: null },
+    ),
+  );
+  assert.equal(
+    (await call(alice, `/workspaces/${a._id}/roles/${role._id}`, "DELETE"))
+      .status,
+    200,
+  );
 });

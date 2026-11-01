@@ -263,13 +263,11 @@ router.post(
       tokenHash: digest(token),
       expiresAt: new Date(Date.now() + 7 * 86400000),
     });
-    res
-      .status(201)
-      .json({
-        token,
-        url: `${process.env.FRONTEND_URL || "http://localhost:5173"}/workspaces?invite=${token}`,
-        expiresInDays: 7,
-      });
+    res.status(201).json({
+      token,
+      url: `${process.env.FRONTEND_URL || "http://localhost:5173"}/workspaces?invite=${token}`,
+      expiresInDays: 7,
+    });
   }),
 );
 router.patch(
@@ -364,6 +362,13 @@ router.get(
   wrap(async (req, res) => {
     const input = validate(
       filters.append({
+        bucket: Joi.string().valid(
+          "open",
+          "unassigned",
+          "overdue",
+          "due-today",
+          "resolved",
+        ),
         page: Joi.number().integer().min(1).default(1),
         limit: Joi.number().integer().min(1).max(100).default(30),
         view: oid,
@@ -385,6 +390,39 @@ router.get(
       if (selected[key]) query[key] = selected[key];
     if (selected.assignedTo) query.assignedTo = selected.assignedTo;
     if (selected.mine) query.assignedTo = req.member._id;
+    if (selected.bucket === "open")
+      query.status = { $nin: ["Resolved", "Closed"] };
+    if (selected.bucket === "resolved")
+      query.status = { $in: ["Resolved", "Closed"] };
+    if (selected.bucket === "unassigned") {
+      query.assignedTo = null;
+      query.status = { $nin: ["Resolved", "Closed"] };
+    }
+    if (selected.bucket === "due-today") {
+      query["sla.pausedAt"] = null;
+      query.status = { $nin: ["Resolved", "Closed"] };
+      query["sla.resolutionDue"] = {
+        $gte: new Date(),
+        $lt: new Date(Date.now() + 86400000),
+      };
+    }
+    if (selected.bucket === "overdue") {
+      query.status = { $nin: ["Resolved", "Closed"] };
+      query["sla.pausedAt"] = null;
+      query.$and = [
+        {
+          $or: [
+            {
+              "sla.firstDue": { $lt: new Date() },
+              "sla.firstRespondedAt": null,
+            },
+            { "sla.nextDue": { $lt: new Date() } },
+            { "sla.resolutionDue": { $lt: new Date() } },
+          ],
+        },
+      ];
+    }
+
     if (selected.search)
       query.$or = ["subject", "number"].map((field) => ({
         [field]: {
@@ -653,16 +691,14 @@ router.post(
       }),
       req.body,
     );
-    res
-      .status(201)
-      .json(
-        await Resource.create({
-          ...input,
-          workspace: req.workspace._id,
-          kind,
-          author: req.user._id,
-        }),
-      );
+    res.status(201).json(
+      await Resource.create({
+        ...input,
+        workspace: req.workspace._id,
+        kind,
+        author: req.user._id,
+      }),
+    );
   }),
 );
 router.delete(
@@ -742,15 +778,13 @@ router.post(
     const input = validate(articleSchema, req.body);
     if (input.published && !canManage(req.member))
       throw fail("Administrator permission required to publish", 403);
-    res
-      .status(201)
-      .json(
-        await Article.create({
-          ...input,
-          workspace: req.workspace._id,
-          author: req.user._id,
-        }),
-      );
+    res.status(201).json(
+      await Article.create({
+        ...input,
+        workspace: req.workspace._id,
+        author: req.user._id,
+      }),
+    );
   }),
 );
 router.patch(

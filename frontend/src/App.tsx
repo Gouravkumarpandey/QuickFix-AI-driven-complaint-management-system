@@ -1,3 +1,4 @@
+import {MfaBoundary,SSOExchange,SSOLogin} from './components/helpdesk/EnterpriseViews';
 import { WorkspaceConsole } from './components/helpdesk/WorkspaceConsole';
 import { HelpCentre } from './components/helpdesk/HelpCentre';
 import React from 'react';
@@ -173,14 +174,13 @@ function AppContent() {
         {/* Protected Routes */}
         <Route
           path="/dashboard"
-          element={
-            <ProtectedRoute>
-              <DashboardRoute />
-            </ProtectedRoute>
-          }
+          element={<ProtectedRoute><Navigate to="/workspaces" replace /></ProtectedRoute>}
         />
+        <Route path="/legacy-dashboard" element={<ProtectedRoute><MfaBoundary><DashboardRoute /></MfaBoundary></ProtectedRoute>} />
 
-        <Route path="/workspaces" element={<ProtectedRoute><WorkspaceConsole /></ProtectedRoute>} />
+        <Route path="/workspaces" element={<ProtectedRoute><MfaBoundary><WorkspaceConsole /></MfaBoundary></ProtectedRoute>} />
+        <Route path="/sso" element={<SSOLogin/>}/>
+        <Route path="/auth/sso" element={<SSOExchange/>}/>
         <Route path="/support/:slug" element={<HelpCentre />} />
 
         {/* Catch all route */}

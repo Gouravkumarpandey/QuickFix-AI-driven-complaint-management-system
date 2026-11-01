@@ -45,7 +45,10 @@ export const Workspace = model("Workspace", {
     subscriptionId: String,
     expiresAt: Date,
     status: String,
+    provider: String,
   },
+  ssoEnabled: { type: Boolean, default: false },
+  aiAutomation: { type: Boolean, default: false },
 });
 export const Membership = model(
   "WorkspaceMembership",
@@ -64,6 +67,8 @@ export const Membership = model(
     online: { type: Boolean, default: true },
     groups: { type: [String], default: ["General"] },
     skills: [String],
+    customRole: Schema.Types.ObjectId,
+    entitlementSuspended: { type: Boolean, default: false },
   },
   [[{ workspace: 1, user: 1 }, { unique: true }]],
 );
@@ -105,7 +110,15 @@ export const Ticket = model(
     },
     channel: {
       type: String,
-      enum: ["web", "chat", "email", "whatsapp"],
+      enum: [
+        "web",
+        "chat",
+        "email",
+        "whatsapp",
+        "phone",
+        "instagram",
+        "messenger",
+      ],
       default: "web",
     },
     group: { type: String, default: "General" },
@@ -135,9 +148,18 @@ export const Ticket = model(
       breached: { type: Boolean, default: false },
     },
     automationRuns: [String],
+    legacyId: { type: Schema.Types.ObjectId },
+    aiAnsweredAt: Date,
   },
   [
     [{ workspace: 1, number: 1 }, { unique: true }],
+    [
+      { workspace: 1, legacyId: 1 },
+      {
+        unique: true,
+        partialFilterExpression: { legacyId: { $type: "objectId" } },
+      },
+    ],
     [{ workspace: 1, status: 1, createdAt: -1 }, {}],
   ],
 );
@@ -195,7 +217,17 @@ export const Connector = model("WorkspaceConnector", {
   workspace: id,
   kind: {
     type: String,
-    enum: ["email", "whatsapp", "slack", "shopify", "shiprocket", "webhook"],
+    enum: [
+      "email",
+      "whatsapp",
+      "slack",
+      "shopify",
+      "shiprocket",
+      "webhook",
+      "phone",
+      "instagram",
+      "messenger",
+    ],
     required: true,
   },
   name: String,
@@ -213,6 +245,7 @@ export const Job = model("WorkspaceJob", {
   attempts: { type: Number, default: 0 },
   availableAt: { type: Date, default: Date.now },
   lockedUntil: Date,
+  leaseToken: String,
   state: { type: String, default: "queued" },
   lastError: String,
 });
@@ -258,4 +291,114 @@ export const ApiKey = model("WorkspaceApiKey", {
   hash: { type: String, unique: true, select: false },
   expiresAt: Date,
   revokedAt: Date,
+});
+
+export const CustomRole = model(
+  "WorkspaceCustomRole",
+  { workspace: id, name: String, permissions: [String] },
+  [[{ workspace: 1, name: 1 }, { unique: true }]],
+);
+export const Dashboard = model("WorkspaceDashboard", {
+  workspace: id,
+  member: id,
+  name: String,
+  widgets: [String],
+  days: { type: Number, default: 30 },
+});
+export const SecurityProfile = model("SecurityProfile", {
+  user: { ...id, unique: true },
+  enabled: { type: Boolean, default: false },
+  secret: { type: String, select: false },
+  pendingSecret: { type: String, select: false },
+  pendingExpires: Date,
+  lastCounter: Number,
+  recoveryHashes: { type: [String], select: false },
+  version: { type: Number, default: 0 },
+});
+export const AuthFlow = model(
+  "AuthFlow",
+  {
+    hash: { type: String, unique: true },
+    kind: String,
+    user: Schema.Types.ObjectId,
+    workspace: Schema.Types.ObjectId,
+    payload: Schema.Types.Mixed,
+    expiresAt: Date,
+  },
+  [[{ expiresAt: 1 }, { expireAfterSeconds: 0 }]],
+);
+export const SSOIdentity = model(
+  "SSOIdentity",
+  { workspace: id, user: id, issuer: String, subject: String },
+  [[{ workspace: 1, issuer: 1, subject: 1 }, { unique: true }]],
+);
+export const Embedding = model(
+  "WorkspaceEmbedding",
+  {
+    workspace: id,
+    article: id,
+    chunk: Number,
+    text: String,
+    model: String,
+    hash: String,
+    vector: { type: [Number], select: false },
+  },
+  [[{ workspace: 1, article: 1, chunk: 1 }, { unique: true }]],
+);
+export const AIEvaluation = model("WorkspaceAIEvaluation", {
+  workspace: id,
+  ticket: Schema.Types.ObjectId,
+  question: String,
+  answer: String,
+  sources: [Schema.Types.ObjectId],
+  mode: String,
+  supported: Boolean,
+  score: Number,
+  feedback: String,
+  actor: String,
+});
+export const BillingOrder = model("WorkspaceBillingOrder", {
+  workspace: id,
+  orderId: { type: String, unique: true },
+  paymentId: { type: String, unique: true, sparse: true },
+  receipt: { type: String, unique: true },
+  invoiceNumber: { type: String, unique: true, sparse: true },
+  plan: String,
+  seats: Number,
+  net: Number,
+  tax: Number,
+  total: Number,
+  cgst: Number,
+  sgst: Number,
+  igst: Number,
+  currency: { type: String, default: "INR" },
+  status: { type: String, default: "created" },
+  customer: Schema.Types.Mixed,
+  seller: Schema.Types.Mixed,
+  taxRate: Number,
+  paidAt: Date,
+  expiresAt: Date,
+  applied: { type: Boolean, default: false },
+});
+export const WorkerHeartbeat = model("HelpdeskWorkerHeartbeat", {
+  name: { type: String, unique: true },
+  lastSeen: Date,
+  lastError: String,
+});
+
+export const ChannelIdentity = model(
+  "WorkspaceChannelIdentity",
+  {
+    workspace: id,
+    connector: id,
+    externalCustomer: String,
+    contact: id,
+    verifiedBy: id,
+  },
+  [[{ workspace: 1, connector: 1, externalCustomer: 1 }, { unique: true }]],
+);
+
+export const InvoiceSequence = model("WorkspaceInvoiceSequence", {
+  _id: String,
+  value: { type: Number, default: 0 },
 });

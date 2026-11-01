@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { indexKnowledge } from "./semantic.js";
+import { receiveWhatsAppMedia } from "./omnichannel.js";
 import { sendWebhook } from "./webhooks.js";
 import nodemailer from "nodemailer";
 import {
@@ -16,6 +18,10 @@ export async function deliver(
   job,
   { fetcher = fetch, mailer, webhookSender = sendWebhook } = {},
 ) {
+  if (job.kind === "ai.index") {
+    await indexKnowledge(job.workspace);
+    return;
+  }
   if (job.kind === "verify.email") {
     const ticket = await Ticket.findOne({
       _id: job.payload.ticket,
@@ -42,7 +48,11 @@ export async function deliver(
       mailer = nodemailer.createTransport({
         host: process.env.SMTP_HOST || "smtp.gmail.com",
         port: Number(process.env.SMTP_PORT || 587),
-        secure: false,
+        secure: Number(process.env.SMTP_PORT || 587) === 465,
+        requireTLS: true,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 30000,
         auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
       });
     }
@@ -62,6 +72,10 @@ export async function deliver(
     enabled: true,
   }).select("+token +secret");
   if (!connector) throw new Error("Connector disabled or removed");
+  if (job.kind === "media.inbound") {
+    await receiveWhatsAppMedia(connector, job.payload, fetcher);
+    return;
+  }
   if (job.kind === "webhook") {
     const body = JSON.stringify({
       event: job.payload.event,
@@ -110,14 +124,101 @@ export async function deliver(
     workspace: job.workspace,
   });
   if (!contact) throw new Error("Customer not found");
-  if (connector.kind === "email") {
+  if (job.kind === "whatsapp.structured") {
+    const payload = job.payload,
+      phone = contact.phone;
+    if (!/^\d{8,15}$/.test(phone || ""))
+      throw new Error("Invalid WhatsApp phone");
+    const body = {
+      messaging_product: "whatsapp",
+      to: phone,
+      ...(payload.template
+        ? {
+            type: "template",
+            template: {
+              name: payload.template.name,
+              language: { code: payload.template.language },
+              ...(payload.template.parameters.length
+                ? {
+                    components: [
+                      {
+                        type: "body",
+                        parameters: payload.template.parameters.map((text) => ({
+                          type: "text",
+                          text,
+                        })),
+                      },
+                    ],
+                  }
+                : {}),
+            },
+          }
+        : {
+            type: payload.mime === "application/pdf" ? "document" : "image",
+            [payload.mime === "application/pdf" ? "document" : "image"]: {
+              id: payload.mediaId,
+              caption: payload.caption,
+              ...(payload.mime === "application/pdf"
+                ? { filename: payload.filename }
+                : {}),
+            },
+          }),
+    };
+    const response = await fetcher(
+      `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION || "v23.0"}/${connector.config.phoneNumberId}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + decrypt(connector.token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      },
+    );
+    if (!response.ok)
+      throw new Error("WhatsApp template/media delivery failed");
+  } else if (["instagram", "messenger"].includes(connector.kind)) {
+    if (!/^\d{8,30}$/.test(ticket.externalThread || ""))
+      throw new Error("Invalid social recipient");
+    const host =
+      connector.kind === "instagram"
+        ? "graph.instagram.com"
+        : "graph.facebook.com";
+    const response = await fetcher(
+      `https://${host}/${process.env.META_GRAPH_VERSION || "v23.0"}/${connector.config.assetId}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + decrypt(connector.token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          recipient: { id: ticket.externalThread },
+          ...(connector.kind === "messenger"
+            ? { messaging_type: "RESPONSE" }
+            : {}),
+          message: { text: message.text },
+        }),
+        signal: AbortSignal.timeout(15000),
+      },
+    );
+    if (!response.ok)
+      throw new Error(
+        "Social reply failed; check provider approval and messaging window",
+      );
+  } else if (connector.kind === "email") {
     if (!mailer) {
       if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS)
         throw new Error("SMTP is not configured");
       mailer = nodemailer.createTransport({
         host: process.env.SMTP_HOST || "smtp.gmail.com",
         port: Number(process.env.SMTP_PORT || 587),
-        secure: false,
+        secure: Number(process.env.SMTP_PORT || 587) === 465,
+        requireTLS: true,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 30000,
         auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
       });
     }
@@ -190,6 +291,7 @@ export async function drainJobs(dependencies = {}, limit = 20) {
         {
           $set: {
             state: "processing",
+            leaseToken: crypto.randomUUID(),
             lockedUntil: new Date(Date.now() + 60000),
           },
           $inc: { attempts: 1 },
@@ -197,6 +299,13 @@ export async function drainJobs(dependencies = {}, limit = 20) {
         { new: true, sort: { availableAt: 1 } },
       );
     if (!job) break;
+    const leaseTimer = setInterval(() => {
+      Job.updateOne(
+        { _id: job._id, state: "processing", leaseToken: job.leaseToken },
+        { $set: { lockedUntil: new Date(Date.now() + 60000) } },
+      ).catch(() => {});
+    }, 20000);
+    leaseTimer.unref();
     try {
       await deliver(job, dependencies);
       job.state = "sent";
@@ -207,14 +316,25 @@ export async function drainJobs(dependencies = {}, limit = 20) {
       job.availableAt = new Date(
         Date.now() + Math.min(3600000, 30000 * 2 ** job.attempts),
       );
-      if (job.payload.message)
-        await Message.updateOne(
-          { _id: job.payload.message, workspace: job.workspace },
-          { $set: { delivery: job.state === "failed" ? "failed" : "queued" } },
-        );
+    } finally {
+      clearInterval(leaseTimer);
     }
-    job.lockedUntil = undefined;
-    await job.save();
+    const completion = await Job.updateOne(
+      { _id: job._id, leaseToken: job.leaseToken, state: "processing" },
+      {
+        $set: {
+          state: job.state,
+          lastError: job.lastError || "",
+          availableAt: job.availableAt,
+        },
+        $unset: { lockedUntil: 1, leaseToken: 1 },
+      },
+    );
+    if (completion.modifiedCount && job.payload.message && job.state !== "sent")
+      await Message.updateOne(
+        { _id: job.payload.message, workspace: job.workspace },
+        { $set: { delivery: job.state === "failed" ? "failed" : "queued" } },
+      );
     processed++;
   }
   return processed;

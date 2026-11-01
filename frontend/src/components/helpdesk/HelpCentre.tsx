@@ -1,3 +1,4 @@
+import { PublicFAQ } from "./EnterpriseViews";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import api from "../../utils/api";
@@ -23,6 +24,7 @@ export function HelpCentre() {
   const [workspace, setWorkspace] = useState<{
       name: string;
       fields: Field[];
+      aiAutomation?: boolean;
     } | null>(null),
     [articles, setArticles] = useState<Article[]>([]),
     [search, setSearch] = useState(""),
@@ -48,10 +50,21 @@ export function HelpCentre() {
   const base = `/help/${slug}`;
   const widget = new URLSearchParams(location.search).get("widget") === "1";
   useEffect(() => {
+    const source = new URLSearchParams(location.search).get("article");
+    if (source)
+      api
+        .get<Article>(base + "/articles/" + encodeURIComponent(source))
+        .then(({ data }) => {
+          setArticle(data);
+          setTab("help");
+        })
+        .catch(() => setError("This source article is no longer published."));
+  }, [base]);
+  useEffect(() => {
     let active = true;
     setError("");
     api
-      .get<{ name: string; fields: Field[] }>(base)
+      .get<{ name: string; fields: Field[]; aiAutomation?: boolean }>(base)
       .then(({ data }) => {
         if (active) setWorkspace(data);
       })
@@ -197,6 +210,7 @@ export function HelpCentre() {
             </div>
             {tab === "help" && (
               <>
+                {workspace.aiAutomation && <PublicFAQ slug={slug!} />}
                 <input
                   aria-label="Search help articles"
                   className={input + " mb-5"}
