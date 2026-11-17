@@ -1,3 +1,7 @@
+import {
+  CustomerEmailOTP,
+  CustomerEmailLimit,
+} from "../../src/helpdesk/models.js";
 import eInvoiceRoutes from "../../src/helpdesk/einvoicing.js";
 import { voiceDeskAdmin } from "../../src/helpdesk/voiceDesk.js";
 import {
@@ -132,6 +136,18 @@ const body = async (response) => {
   const data = await response.json();
   assert.ok(response.ok, JSON.stringify(data));
   return data;
+};
+const verifyGuest = async (pending, slug = "alpha") => {
+  const job = await Job.findOne({
+    kind: "customer.email-otp",
+    "payload.ticket": new mongoose.Types.ObjectId(pending.id),
+  }).sort({ createdAt: -1 });
+  return body(
+    await call(null, `/help/${slug}/tickets/${pending.id}/verify-otp`, "POST", {
+      challenge: pending.challenge,
+      code: decrypt(job.payload.code),
+    }),
+  );
 };
 const createWorkspace = async (user, name) =>
   body(
@@ -373,6 +389,7 @@ test("knowledge base publishing and public guest conversations preserve privacy"
     (await call(null, `/help/alpha/tickets/${created.id}`)).status,
     404,
   );
+  Object.assign(created, await verifyGuest(created));
   const detail = await body(
     await call(null, `/help/alpha/tickets/${created.id}`, "GET", undefined, {
       "X-Ticket-Token": created.accessToken,
@@ -761,6 +778,7 @@ test("SLA policies, pause/resume and staff presence are persisted without leakin
       description: "Please investigate this order",
     }),
   );
+  Object.assign(guest, await verifyGuest(guest));
   const current = await Ticket.findById(guest.id);
   await call(alice, `/workspaces/${a._id}/tickets/${guest.id}`, "PATCH", {
     status: "Waiting on customer",
@@ -3027,5 +3045,254 @@ test("e-invoice preparation binds immutable totals and environment while missing
     (await call(alice, path + "/" + invoice._id + "/prepare", "POST", input))
       .status,
     409,
+  );
+});
+test("customer email OTP grants access only once and public replies use email without exposing private notes", async () => {
+  const pending = await body(
+    await call(null, "/help/alpha/tickets", "POST", {
+      name: "Customer",
+      email: "otp@example.com",
+      subject: "Email support",
+      description: "Track my order by email",
+    }),
+  );
+  assert.equal(pending.accessToken, undefined);
+  assert.equal(pending.verificationRequired, true);
+  assert.equal(
+    (await call(null, `/help/alpha/tickets/${pending.id}`)).status,
+    404,
+  );
+  const job = await Job.findOne({
+      kind: "customer.email-otp",
+      "payload.ticket": new mongoose.Types.ObjectId(pending.id),
+    }),
+    code = decrypt(job.payload.code);
+  assert.match(code, /^\d{6}$/);
+  assert.ok(!JSON.stringify(pending).includes(code));
+  let sent;
+  const { deliver } = await import("../../src/helpdesk/jobs.js");
+  await deliver(job, {
+    mailer: {
+      sendMail: async (mail) => {
+        sent = mail;
+      },
+    },
+  });
+  assert.equal(sent.to, "otp@example.com");
+  assert.ok(sent.text.includes(code));
+  const path = `/help/alpha/tickets/${pending.id}`;
+  assert.equal(
+    (
+      await call(null, path + "/email-otp", "POST", {
+        email: "otp@example.com",
+      })
+    ).status,
+    429,
+  );
+  assert.equal(
+    (
+      await call(null, `/help/bravo/tickets/${pending.id}/verify-otp`, "POST", {
+        challenge: pending.challenge,
+        code,
+      })
+    ).status,
+    400,
+  );
+  const access = await verifyGuest(pending);
+  assert.equal(
+    (
+      await call(null, path + "/verify-otp", "POST", {
+        challenge: pending.challenge,
+        code,
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await call(null, path, "GET", undefined, {
+        "X-Ticket-Token": access.accessToken,
+      })
+    ).status,
+    200,
+  );
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/tickets/${pending.id}/messages`,
+      "POST",
+      { text: "Private supplier note", internal: true },
+    ),
+  );
+  assert.equal(await Job.countDocuments({ kind: "customer.email-reply" }), 0);
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/tickets/${pending.id}/messages`,
+      "POST",
+      { text: "Your order will arrive tomorrow." },
+    ),
+  );
+  const reply = await Job.findOne({ kind: "customer.email-reply" });
+  assert.ok(reply);
+  await deliver(reply, {
+    mailer: {
+      sendMail: async (mail) => {
+        sent = mail;
+      },
+    },
+  });
+  assert.ok(sent.text.includes("Your order will arrive tomorrow."));
+  assert.ok(!sent.text.includes("Private supplier note"));
+  assert.ok(sent.text.includes("/support/alpha?ticket=" + pending.id));
+  assert.equal(
+    (await Message.findById(reply.payload.message)).delivery,
+    "sent",
+  );
+});
+test("email OTP failed attempts persist, resends rotate codes, expiry and hourly limits are enforced", async () => {
+  const pending = await body(
+    await call(null, "/help/alpha/tickets", "POST", {
+      name: "Customer",
+      email: "limits@example.com",
+      subject: "OTP limits",
+      description: "Please verify this request",
+    }),
+  );
+  const path = `/help/alpha/tickets/${pending.id}`,
+    job = await Job.findOne({
+      kind: "customer.email-otp",
+      "payload.ticket": new mongoose.Types.ObjectId(pending.id),
+    }),
+    code = decrypt(job.payload.code),
+    wrong = code === "111111" ? "222222" : "111111";
+  for (let i = 0; i < 5; i++)
+    assert.equal(
+      (
+        await call(null, path + "/verify-otp", "POST", {
+          challenge: pending.challenge,
+          code: wrong,
+        })
+      ).status,
+      400,
+    );
+  assert.equal(
+    (await CustomerEmailOTP.findOne({ ticket: pending.id })).attempts,
+    5,
+  );
+  assert.equal(
+    (
+      await call(null, path + "/verify-otp", "POST", {
+        challenge: pending.challenge,
+        code,
+      })
+    ).status,
+    400,
+  );
+  await CustomerEmailOTP.updateOne(
+    { ticket: pending.id },
+    { $set: { sentAt: new Date(Date.now() - 61000) } },
+  );
+  const next = await body(
+    await call(null, path + "/email-otp", "POST", {
+      email: "limits@example.com",
+    }),
+  );
+  assert.notEqual(next.challenge, pending.challenge);
+  assert.equal(
+    (
+      await call(null, path + "/verify-otp", "POST", {
+        challenge: pending.challenge,
+        code,
+      })
+    ).status,
+    400,
+  );
+  await CustomerEmailOTP.updateOne(
+    { ticket: pending.id },
+    { $set: { expiresAt: new Date(Date.now() - 1) } },
+  );
+  assert.equal(
+    (
+      await call(null, path + "/verify-otp", "POST", {
+        challenge: next.challenge,
+        code,
+      })
+    ).status,
+    400,
+  );
+  await CustomerEmailLimit.updateOne(
+    { workspace: a._id },
+    { $set: { count: 5 } },
+  );
+  await CustomerEmailOTP.updateOne(
+    { ticket: pending.id },
+    { $set: { sentAt: new Date(Date.now() - 61000) } },
+  );
+  assert.equal(
+    (
+      await call(null, path + "/email-otp", "POST", {
+        email: "limits@example.com",
+      })
+    ).status,
+    429,
+  );
+});
+test("verified portal requests bind to email connections and incoming email replies keep the same ticket", async () => {
+  const connection = await body(
+    await call(alice, `/workspaces/${a._id}/connectors`, "POST", {
+      kind: "email",
+      name: "Primary support inbox",
+    }),
+  );
+  const pending = await body(
+    await call(null, "/help/alpha/tickets", "POST", {
+      name: "Email Buyer",
+      email: "mailbox-buyer@example.com",
+      subject: "Support by email",
+      description: "Use my email for this conversation",
+    }),
+  );
+  const ticket = await Ticket.findById(pending.id);
+  assert.equal(String(ticket.connection), connection.id);
+  await verifyGuest(pending);
+  await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/tickets/${pending.id}/messages`,
+      "POST",
+      { text: "We are checking your order." },
+    ),
+  );
+  const reply = await Job.findOne({
+    kind: "reply",
+    "payload.ticket": ticket._id,
+  });
+  assert.ok(reply);
+  const { deliver } = await import("../../src/helpdesk/jobs.js");
+  let mail;
+  await deliver(reply, {
+    mailer: {
+      sendMail: async (value) => {
+        mail = value;
+      },
+    },
+  });
+  assert.equal(mail.to, "mailbox-buyer@example.com");
+  assert.ok(mail.subject.includes("[" + ticket.number + "]"));
+  const connector = await Connector.findById(connection.id);
+  await importRawMail(
+    connector,
+    Buffer.from(
+      `From: Email Buyer <mailbox-buyer@example.com>\r\nTo: support@example.com\r\nSubject: ${mail.subject}\r\nMessage-ID: <customer-email-reply@example.com>\r\n\r\nThank you for checking.`,
+    ),
+  );
+  assert.equal(await Ticket.countDocuments({ workspace: a._id }), 1);
+  assert.ok(
+    await Message.exists({
+      workspace: a._id,
+      ticket: ticket._id,
+      text: "Thank you for checking.",
+    }),
   );
 });

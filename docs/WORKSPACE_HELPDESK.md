@@ -12,7 +12,7 @@ This is a new, isolated data model. The original complaint dashboards remain ava
 - Public and authenticated ticket intake, custom fields, search, saved views, private notes, canned replies, macros, safe condition/action automations, same-customer merges and optimistic update conflicts.
 - Group and capacity routing, agent availability, short-lived viewer presence and duplicate-reply warnings. Presence warns about collisions; it does not lock replies.
 - First/next response and resolution targets, priority policies, time zones, business hours, holidays, waiting-state pause/resume and an SLA monitoring worker. Policies are snapshotted when tickets are created.
-- Published/draft knowledge articles and search, an embeddable help-centre widget, customer-token conversations and staff-triggered guest email verification.
+- Published/draft knowledge articles and search, an embeddable help-centre widget, customer-token conversations gated by server-verified email OTPs.
 - Private scanned PNG/JPEG/PDF attachments, internal-file visibility, reporting CSV, audit history, scoped expiring API keys and a durable delivery outbox with failed-job retries.
 - Provider adapters for signed incoming email, outgoing SMTP, WhatsApp text, Slack notifications, outgoing signed webhooks, read-only Shopify orders and Shiprocket shipment tracking.
 - Recurring Stripe workspace checkout, billing portal and subscription synchronization. Staff invitation and activation limits use the workspace's seat allowance. Downgrades do not automatically deactivate existing members; owners must remove excess staff.
@@ -61,7 +61,7 @@ Sign the exact raw request bytes with HMAC-SHA256 using the connection secret. S
 
 ## Identity, API and delivery guarantees
 
-Guest intake returns a private access token, stored by the UI in session storage. Possession authorizes that guest conversation, but does not prove ownership of the supplied email. Until verified, guest tickets cannot be merged with customer conversations or used for commerce context. Staff can queue a verification email; proof expires after 30 minutes, can be used once, and rotates the guest access token. The recipient explicitly confirms the link in the help centre. The original browser token stops working after verification.
+Guest intake queues an email OTP and returns a random challenge, never conversation access. The six-digit OTP expires in 10 minutes and allows five attempts; resends wait 60 seconds and are limited to five deliveries per recipient/workspace/hour. Codes are HMAC-protected in verification storage and encrypted in the delivery outbox. Successful server verification consumes the OTP and grants a private conversation token, stored in browser session storage. Recovery from an emailed ticket link requests another OTP and rotates access on verification. Private conversations and replies require verified access. Previously issued staff verification links remain supported during transition. Email is the primary support channel; phone/WhatsApp integrations are optional. See [advanced setup](ADVANCED_HELPDESK.md) for mailbox syncing and live provider requirements.
 
 Owners/admins can create 90-day developer keys with `tickets:read`, `tickets:write`, `contacts:read` and `articles:read` scopes. Use `Authorization: Bearer <key>` against `/api/developer/<workspaceId>/...`. Only hashes are stored; the full token is displayed once. Revocation and current staff membership are checked on each request.
 

@@ -1,3 +1,4 @@
+import { deliverCustomerEmail } from "./customerEmail.js";
 import crypto from "node:crypto";
 import { cleanHTML } from "./richText.js";
 import { replyTransport } from "./mailAuth.js";
@@ -30,6 +31,8 @@ export async function deliver(
   job,
   { fetcher = fetch, mailer, webhookSender = sendWebhook } = {},
 ) {
+  if (["customer.email-otp", "customer.email-reply"].includes(job.kind))
+    return deliverCustomerEmail(job, mailer);
   if (job.kind === "ai.evaluate") {
     const { runBenchmark } = await import("./evaluation.js");
     await runBenchmark(job.payload.id);
@@ -289,7 +292,7 @@ export async function deliver(
     await mailer.sendMail({
       from,
       to: contact.email,
-      replyTo: connector.config.fromAddress || process.env.EMAIL_USER,
+      replyTo: connector.config?.fromAddress || process.env.EMAIL_USER,
       subject: `Re: [${ticket.number}] ${ticket.subject}`,
       text: message.text,
       ...(message.html ? { html: cleanHTML(message.html) } : {}),

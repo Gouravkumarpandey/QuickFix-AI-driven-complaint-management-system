@@ -168,6 +168,8 @@ voiceAdmin.put(
         },
       };
       await c.save({ session });
+      w.settings = { ...w.settings, browserPhoneEnabled: cfg.browserInbound };
+      await w.save({ session });
       await audit(w._id, req.user._id, "voice.configured", c._id, session);
     });
     res.json({

@@ -400,6 +400,58 @@ async function main() {
     path: "/tmp/quickfix-help-centre.png",
     fullPage: true,
   });
+
+  await guest
+    .getByRole("button", { name: "Contact support", exact: true })
+    .click();
+  await guest.getByLabel("Your name", { exact: true }).fill("Email Customer");
+  await guest
+    .getByLabel("Email", { exact: true })
+    .fill("email-customer@fixture.invalid");
+  await guest
+    .getByLabel("Subject", { exact: true })
+    .fill("Email OTP verification test");
+  await guest
+    .getByLabel("Tell us what happened", { exact: true })
+    .fill("Please help me track this order using email support.");
+  const pendingResponse = guest.waitForResponse(
+    (r) =>
+      r.url().endsWith("/help/vaidiktalk-demo/tickets") &&
+      r.request().method() === "POST",
+  );
+  await guest
+    .getByRole("button", { name: "Submit support request", exact: true })
+    .click();
+  const pending = await (await pendingResponse).json();
+  if (pending.accessToken)
+    throw new Error("Unverified portal response leaked access");
+  await guest
+    .getByRole("heading", { name: "Verify your email OTP", exact: true })
+    .waitFor();
+  const { Job } = await import("../../src/helpdesk/models.js");
+  const { decrypt } = await import("../../src/helpdesk/connectors.js");
+  const otpJob = await Job.findOne({
+    kind: "customer.email-otp",
+    "payload.ticket": new mongoose.Types.ObjectId(pending.id),
+  });
+  await guest
+    .getByLabel("Email OTP", { exact: true })
+    .fill(decrypt(otpJob.payload.code));
+  await guest
+    .getByRole("button", {
+      name: "Verify OTP and open conversation",
+      exact: true,
+    })
+    .click();
+  await guest
+    .getByText("Please help me track this order using email support.", {
+      exact: true,
+    })
+    .waitFor();
+  await guest.screenshot({
+    path: "/tmp/quickfix-email-otp-verified.png",
+    fullPage: true,
+  });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "Security", exact: true }).click();
   await page

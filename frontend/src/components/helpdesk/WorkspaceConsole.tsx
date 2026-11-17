@@ -53,6 +53,7 @@ interface Workspace {
     timezone: string;
     language: string;
     publicPortal: boolean;
+    browserPhoneEnabled?: boolean;
     statuses: string[];
     pauseStatuses: string[];
     customFields: Field[];
@@ -320,6 +321,7 @@ export function WorkspaceConsole() {
       )}
       <main className="lg:ml-60 min-w-0 p-4 md:p-7">
         {workspace &&
+          workspace.settings.browserPhoneEnabled &&
           member &&
           ["owner", "admin", "agent"].includes(member.role) && (
             <BrowserDeskPhone

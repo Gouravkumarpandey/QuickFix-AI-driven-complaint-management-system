@@ -4,7 +4,16 @@ import Joi from "joi";
 import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { asyncHandler as wrap } from "../middleware/errorHandler.js";
-import { Workspace, Article, Ticket, Message } from "./models.js";
+import { queueCustomerOTP, otpHash } from "./customerEmail.js";
+import {
+  Workspace,
+  Article,
+  Ticket,
+  Message,
+  Contact,
+  CustomerEmailOTP,
+  Connector,
+} from "./models.js";
 import { fail, validate, text, oid } from "./validation.js";
 import { inWorkspace } from "./access.js";
 import { createTicket, addMessage, digest } from "./tickets.js";
@@ -40,6 +49,8 @@ router.get(
       slug: req.workspace.slug,
       fields: req.workspace.settings.customFields,
       language: req.workspace.settings.language,
+      primaryChannel: "email",
+      customerVerification: "email-otp",
     }),
   ),
 );
@@ -104,13 +115,31 @@ router.post(
       }),
       req.body,
     );
-    const result = await inWorkspace(req.workspace._id, (session, workspace) =>
-      createTicket(workspace, input, "portal", session, { guest: true }),
+    const result = await inWorkspace(
+      req.workspace._id,
+      async (session, workspace) => {
+        const emailConnector = await Connector.findOne({
+          workspace: workspace._id,
+          kind: "email",
+          enabled: true,
+        })
+          .sort({ createdAt: 1 })
+          .session(session);
+        const result = await createTicket(workspace, input, "portal", session, {
+          guest: true,
+          connection: emailConnector?._id,
+        });
+        const otp = await queueCustomerOTP(workspace, result.ticket, session);
+        return { ...result, ...otp };
+      },
     );
-    res.status(201).json({
+    res.set("Cache-Control", "no-store").status(201).json({
       id: result.ticket._id,
       number: result.ticket.number,
-      accessToken: result.accessToken,
+      challenge: result.challenge,
+      expiresIn: result.expiresIn,
+      resendAfter: result.resendAfter,
+      verificationRequired: true,
     });
   }),
 );
@@ -123,10 +152,109 @@ const guest = async (req) => {
     _id: id,
     workspace: req.workspace._id,
     guestTokenHash: digest(token),
+    guestVerified: true,
   });
   if (!ticket) throw fail("Ticket not found", 404);
   return ticket;
 };
+
+const otpRate = rateLimit({
+  windowMs: 15 * 60000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+router.post(
+  "/:slug/tickets/:ticketId/email-otp",
+  otpRate,
+  wrap(async (req, res) => {
+    const { email } = validate(
+      Joi.object({ email: Joi.string().email().lowercase().required() }),
+      req.body,
+    );
+    const id = validate(oid.required(), req.params.ticketId);
+    const result = await inWorkspace(req.workspace._id, async (session, w) => {
+      const ticket = await Ticket.findOne({
+        _id: id,
+        workspace: w._id,
+        guest: true,
+      }).session(session);
+      const contact =
+        ticket &&
+        (await Contact.findOne({
+          _id: ticket.contact,
+          workspace: w._id,
+          email,
+        }).session(session));
+      if (!contact)
+        return {
+          challenge: crypto.randomBytes(32).toString("hex"),
+          expiresIn: 600,
+          resendAfter: 60,
+        };
+      return queueCustomerOTP(w, ticket, session);
+    });
+    res.set("Cache-Control", "no-store").status(202).json(result);
+  }),
+);
+router.post(
+  "/:slug/tickets/:ticketId/verify-otp",
+  otpRate,
+  wrap(async (req, res) => {
+    const input = validate(
+      Joi.object({
+        challenge: Joi.string().hex().length(64).required(),
+        code: Joi.string()
+          .pattern(/^\d{6}$/)
+          .required(),
+      }),
+      req.body,
+    );
+    const id = validate(oid.required(), req.params.ticketId),
+      rawToken = crypto.randomBytes(32).toString("hex");
+    const result = await inWorkspace(req.workspace._id, async (session, w) => {
+      const otp = await CustomerEmailOTP.findOne({
+        workspace: w._id,
+        ticket: id,
+        challengeHash: digest(input.challenge),
+        expiresAt: { $gt: new Date() },
+        attempts: { $lt: 5 },
+      })
+        .select("+codeHash")
+        .session(session);
+      if (!otp) return null;
+      otp.attempts++;
+      await otp.save({ session });
+      const expected = otpHash(w._id, id, input.challenge, input.code);
+      if (
+        !crypto.timingSafeEqual(
+          Buffer.from(expected, "hex"),
+          Buffer.from(otp.codeHash, "hex"),
+        )
+      )
+        return null;
+      const ticket = await Ticket.findOne({
+        _id: id,
+        workspace: w._id,
+        guest: true,
+      }).session(session);
+      if (!ticket) return null;
+      ticket.guestVerified = true;
+      ticket.guestTokenHash = digest(rawToken);
+      ticket.emailVerifyHash = undefined;
+      ticket.emailVerifyExpires = undefined;
+      await ticket.save({ session });
+      await otp.deleteOne({ session });
+      return { id: ticket._id, number: ticket.number, accessToken: rawToken };
+    });
+    if (!result)
+      throw fail(
+        "OTP is invalid, expired or locked. Request a new email OTP.",
+        400,
+      );
+    res.set("Cache-Control", "no-store").json(result);
+  }),
+);
 router.post(
   "/:slug/tickets/:ticketId/verify-email",
   wrap(async (req, res) => {

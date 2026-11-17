@@ -32,6 +32,12 @@ export function HelpCentre() {
     [tab, setTab] = useState("help"),
     [name, setName] = useState(""),
     [email, setEmail] = useState(""),
+    [otp, setOTP] = useState(""),
+    [pending, setPending] = useState<{
+      id: string;
+      number?: string;
+      challenge: string;
+    } | null>(null),
     [subject, setSubject] = useState(""),
     [description, setDescription] = useState(""),
     [fields, setFields] = useState<Record<string, unknown>>({}),
@@ -62,6 +68,10 @@ export function HelpCentre() {
   }, [base]);
   useEffect(() => {
     let active = true;
+    setAccess(null);
+    setPending(null);
+    setOTP("");
+    setMessages([]);
     setError("");
     api
       .get<{ name: string; fields: Field[]; aiAutomation?: boolean }>(base)
@@ -149,11 +159,49 @@ export function HelpCentre() {
             {workspace?.name || "Help centre"}
           </h1>
           <p className="text-sm text-slate-500 mt-2">
-            Find answers or start a conversation with our support team.
+            Get support by email. Verify your email with an OTP to securely
+            access your conversation.
           </p>
         </div>
       </header>
       <main className={`max-w-4xl mx-auto ${widget ? "p-3" : "p-6"}`}>
+        {!access && verificationTicket && !proof && !pending && (
+          <form
+            className="bg-white border rounded-xl p-5 mb-4 space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void run(async () => {
+                const { data } = await api.post(
+                  `${base}/tickets/${verificationTicket}/email-otp`,
+                  { email },
+                );
+                setPending({ id: verificationTicket, ...data });
+                setTab("contact");
+              });
+            }}
+          >
+            <h2 className="font-semibold">
+              Open your email support conversation
+            </h2>
+            <label className="block text-sm">
+              Your email
+              <input
+                type="email"
+                required
+                className={input}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </label>
+            <button
+              className="bg-blue-600 text-white rounded-lg px-4 py-2"
+              disabled={busy}
+            >
+              Send email OTP
+            </button>
+          </form>
+        )}
+
         {proof && verificationTicket && (
           <div className="bg-blue-50 rounded-xl p-4 mb-4">
             <p className="text-sm mb-3">
@@ -262,7 +310,87 @@ export function HelpCentre() {
               </>
             )}
             {tab === "contact" &&
-              (access ? (
+              (pending ? (
+                <section className="bg-white border rounded-xl p-5 space-y-4">
+                  <h2 className="text-lg font-semibold">
+                    Verify your email OTP
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    A six-digit OTP will arrive at {email} if it matches this
+                    request. Check your inbox and spam folder. It expires in 10
+                    minutes. You have five attempts.
+                  </p>
+                  <form
+                    className="space-y-3"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void run(async () => {
+                        const { data } = await api.post<
+                          NonNullable<typeof access>
+                        >(`${base}/tickets/${pending.id}/verify-otp`, {
+                          challenge: pending.challenge,
+                          code: otp,
+                        });
+                        setAccess(data);
+                        setPending(null);
+                        setOTP("");
+                        sessionStorage.setItem(
+                          "quickfix-portal:" + slug,
+                          JSON.stringify(data),
+                        );
+                        history.replaceState(null, "", `/support/${slug}`);
+                      });
+                    }}
+                  >
+                    <label className="block text-sm">
+                      Email OTP
+                      <input
+                        className={input}
+                        required
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        value={otp}
+                        onChange={(e) =>
+                          setOTP(e.target.value.replace(/\D/g, ""))
+                        }
+                      />
+                    </label>
+                    <button
+                      className="bg-blue-600 text-white rounded-lg px-4 py-2"
+                      disabled={busy}
+                    >
+                      Verify OTP and open conversation
+                    </button>
+                  </form>
+                  <button
+                    className="text-sm text-blue-700 underline"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        const { data } = await api.post(
+                          `${base}/tickets/${pending.id}/email-otp`,
+                          { email },
+                        );
+                        setPending({ ...pending, ...data });
+                        setOTP("");
+                      })
+                    }
+                  >
+                    Resend email OTP (after 60 seconds)
+                  </button>
+                  <button
+                    className="block text-sm underline"
+                    onClick={() => {
+                      setPending(null);
+                      setOTP("");
+                    }}
+                  >
+                    Use a different email or start another request
+                  </button>
+                </section>
+              ) : access ? (
                 <section className="bg-white border rounded-xl p-5">
                   <div className="flex justify-between items-center">
                     <h2 className="font-medium text-sm">{access.number}</h2>
@@ -337,9 +465,11 @@ export function HelpCentre() {
                   onSubmit={(event) => {
                     event.preventDefault();
                     void run(async () => {
-                      const { data } = await api.post<
-                        NonNullable<typeof access>
-                      >(base + "/tickets", {
+                      const { data } = await api.post<{
+                        id: string;
+                        number: string;
+                        challenge: string;
+                      }>(base + "/tickets", {
                         name,
                         email,
                         subject,
@@ -347,11 +477,8 @@ export function HelpCentre() {
                         customFields: fields,
                         channel: widget ? "chat" : "web",
                       });
-                      setAccess(data);
-                      sessionStorage.setItem(
-                        "quickfix-portal:" + slug,
-                        JSON.stringify(data),
-                      );
+                      setPending(data);
+                      setOTP("");
                     });
                   }}
                 >

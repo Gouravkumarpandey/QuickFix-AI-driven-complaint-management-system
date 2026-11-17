@@ -276,7 +276,10 @@ export async function addMessage(
         externalId,
         attachments: input.attachments || [],
         delivery:
-          !input.internal && role !== "customer" && ticket.connection
+          !input.internal &&
+          role !== "customer" &&
+          ((ticket.connection && (!ticket.guest || ticket.guestVerified)) ||
+            (ticket.guest && ticket.guestVerified))
             ? "queued"
             : "stored",
       },
@@ -312,7 +315,7 @@ export async function addMessage(
   if (message.delivery === "queued")
     await enqueue(
       workspace._id,
-      "reply",
+      ticket.connection ? "reply" : "customer.email-reply",
       {
         ticket: ticket._id,
         message: message._id,
