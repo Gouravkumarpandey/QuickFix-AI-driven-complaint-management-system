@@ -1,0 +1,22 @@
+# Optional overlay: docker compose -f deploy/compose.yml -f deploy/compose.vector.yml up -d
+services:
+  qdrant:
+    image: ${QDRANT_IMAGE:?Set QDRANT_IMAGE to a supported pinned qdrant/qdrant image}
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?Set a private Qdrant API key}
+    volumes: [vector-data:/qdrant/storage]
+    restart: unless-stopped
+  api:
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      QDRANT_COLLECTION: quickfix_knowledge
+    depends_on: [qdrant]
+  worker:
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      QDRANT_COLLECTION: quickfix_knowledge
+    depends_on: [qdrant]
+volumes:
+  vector-data:

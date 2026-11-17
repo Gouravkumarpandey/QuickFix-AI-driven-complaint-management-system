@@ -91,14 +91,20 @@ async function main() {
         )
       ).ticket,
     );
-  await Ticket.insertMany(Array.from({ length: 31 }, (_, index) => ({
-    workspace: workspace._id,
-    contact: tickets[0].contact,
-    number: `QF-BROWSER-PAGE-${index}`,
-    subject: `Phone pagination fixture ${index}`,
-    description: "Phone channel pagination regression",
-    channel: "phone",
-  })));
+  await Ticket.insertMany(
+    Array.from({ length: 31 }, (_, index) => ({
+      workspace: workspace._id,
+      contact: tickets[0].contact,
+      number: `QF-BROWSER-PAGE-${index}`,
+      subject: `Phone pagination fixture ${index}`,
+      description: "Phone channel pagination regression",
+      channel: "phone",
+    })),
+  );
+  await Ticket.updateOne(
+    { _id: tickets[0]._id },
+    { $set: { channel: "email" } },
+  );
   await Article.create({
     workspace: workspace._id,
     slug: "track-your-order",
@@ -178,8 +184,10 @@ async function main() {
   await page.addInitScript(
     ({ access, user }) => {
       // Seed once so MFA verification can replace the session across reloads.
-      if(!sessionStorage.getItem('token'))sessionStorage.setItem("token", access);
-      if(!sessionStorage.getItem('user'))sessionStorage.setItem("user", JSON.stringify(user));
+      if (!sessionStorage.getItem("token"))
+        sessionStorage.setItem("token", access);
+      if (!sessionStorage.getItem("user"))
+        sessionStorage.setItem("user", JSON.stringify(user));
     },
     {
       access,
@@ -207,22 +215,59 @@ async function main() {
   await page
     .getByRole("heading", { name: "Support inbox", exact: true })
     .waitFor();
-  await page.getByLabel("Filter channel", { exact: true }).selectOption("phone");
+  await page
+    .getByLabel("Filter channel", { exact: true })
+    .selectOption("phone");
   await page.getByText("1–30 of 31", { exact: true }).waitFor();
-  const firstPhonePage = await page.getByRole("button", { name: /Phone pagination fixture/ }).allTextContents();
+  const firstPhonePage = await page
+    .getByRole("button", { name: /Phone pagination fixture/ })
+    .allTextContents();
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await page.getByText("31–31 of 31", { exact: true }).waitFor();
-  const lastPhoneTicket = await page.getByRole("button", { name: /Phone pagination fixture/ }).textContent();
-  if (firstPhonePage.includes(lastPhoneTicket)) throw new Error("Ticket duplicated across inbox pages");
-  await page.getByLabel("Search tickets", { exact: true }).fill("no matching ticket");
+  const lastPhoneTicket = await page
+    .getByRole("button", { name: /Phone pagination fixture/ })
+    .textContent();
+  if (firstPhonePage.includes(lastPhoneTicket))
+    throw new Error("Ticket duplicated across inbox pages");
+  await page
+    .getByLabel("Search tickets", { exact: true })
+    .fill("no matching ticket");
   await page.getByText("0 tickets", { exact: true }).waitFor();
   await page.getByLabel("Filter channel", { exact: true }).selectOption("");
-  await page.getByLabel("Search tickets", { exact: true }).fill("Delivery update for order");
+  await page
+    .getByLabel("Search tickets", { exact: true })
+    .fill("Delivery update for order");
+  await page
+    .getByRole("button", { name: "Table and bulk actions", exact: true })
+    .click();
+  await page
+    .getByLabel("Search table tickets", { exact: true })
+    .fill("Delivery update for order");
+  await page
+    .getByRole("button", {
+      name: "Delivery update for order #VT-1042",
+      exact: false,
+    })
+    .waitFor();
+  await page.getByLabel("Select all page tickets", { exact: true }).check();
+  await page
+    .getByLabel("Bulk ticket priority", { exact: true })
+    .selectOption("High");
+  await page
+    .getByRole("button", { name: "Apply to selected", exact: true })
+    .click();
+  await page.getByText("Selected tickets updated.", { exact: true }).waitFor();
+  await page
+    .getByRole("button", {
+      name: "Delivery update for order #VT-1042",
+      exact: false,
+    })
+    .click();
   await page.getByRole("button", { name: /Delivery update for order/ }).click();
   await page
     .getByRole("heading", {
       name: "Delivery update for order #VT-1042",
-      level:2,
+      level: 2,
       exact: true,
     })
     .waitFor();
@@ -230,11 +275,46 @@ async function main() {
     path: "/tmp/quickfix-helpdesk-desktop.png",
     fullPage: true,
   });
+  await page.getByLabel("Format email reply", { exact: true }).check();
   await page
-    .getByPlaceholder("Write your response…")
+    .getByRole("textbox", { name: "Formatted reply", exact: true })
     .fill("We are checking the latest shipment update for you.");
   await page.getByRole("button", { name: "Send reply", exact: true }).click();
   await page.getByText("Reply saved.", { exact: true }).waitFor();
+  const { Message } = await import("../../src/helpdesk/models.js");
+  const savedReply = await Message.findOne({
+    ticket: tickets[0]._id,
+    text: "We are checking the latest shipment update for you.",
+  });
+  if (!savedReply?.html) throw new Error("Formatted reply HTML was not saved");
+  await page
+    .getByRole("button", { name: "Advanced setup", exact: true })
+    .click();
+  await page
+    .getByRole("heading", { name: "Advanced service setup", exact: true })
+    .waitFor();
+  for (const [section, heading] of [
+    ["Calling", "Browser calling and call routing"],
+    ["WhatsApp", "WhatsApp template approvals"],
+    ["Identity", "SAML and user provisioning"],
+    ["Recurring billing", "Recurring payments / UPI AutoPay"],
+    ["Accounting", "Reviewed invoices and credit notes"],
+    ["AI evaluation", "AI acceptance checks"],
+    ["Service health", "Service health"],
+  ]) {
+    await page
+      .getByRole("navigation", {
+        name: "Advanced service sections",
+        exact: true,
+      })
+      .getByRole("button", { name: section, exact: true })
+      .click();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+  }
+  await page.screenshot({
+    path: "/tmp/quickfix-advanced-setup.png",
+    fullPage: true,
+  });
   await page
     .getByRole("button", { name: "Knowledge base", exact: true })
     .click();
@@ -275,12 +355,14 @@ async function main() {
     .getByRole("button", { name: "Toggle navigation", exact: true })
     .click();
   await page.getByRole("button", { name: "Inbox", exact: true }).click();
-  await page.getByLabel("Search tickets", { exact: true }).fill("Delivery update for order");
+  await page
+    .getByLabel("Search tickets", { exact: true })
+    .fill("Delivery update for order");
   await page.getByRole("button", { name: /Delivery update for order/ }).click();
   await page
     .getByRole("heading", {
       name: "Delivery update for order #VT-1042",
-      level:2,
+      level: 2,
       exact: true,
     })
     .waitFor();

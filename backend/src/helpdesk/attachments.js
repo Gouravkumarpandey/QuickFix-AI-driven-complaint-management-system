@@ -24,7 +24,27 @@ export function mimeOf(buffer) {
   if (buffer[0] === 255 && buffer[1] === 216 && buffer[2] === 255)
     return "image/jpeg";
   if (buffer.subarray(0, 5).toString() === "%PDF-") return "application/pdf";
-  throw fail("Only PNG, JPEG and PDF files are supported");
+  if (buffer.subarray(0, 4).toString() === "OggS") return "audio/ogg";
+  if (
+    buffer.subarray(0, 3).toString() === "ID3" ||
+    (buffer[0] === 255 &&
+      (buffer[1] & 0xe0) === 0xe0 &&
+      (buffer[1] & 0x06) !== 0)
+  )
+    return "audio/mpeg";
+  if (
+    buffer.subarray(0, 4).toString() === "RIFF" &&
+    buffer.subarray(8, 12).toString() === "WAVE"
+  )
+    return "audio/wav";
+  if (
+    buffer.subarray(4, 8).toString() === "ftyp" &&
+    ["isom", "iso2", "mp41", "mp42", "avc1", "M4V "].includes(
+      buffer.subarray(8, 12).toString(),
+    )
+  )
+    return "video/mp4";
+  throw fail("Only PNG, JPEG, PDF, MP3, OGG, WAV and MP4 files are supported");
 }
 export function scan(buffer) {
   return new Promise((resolve, reject) => {

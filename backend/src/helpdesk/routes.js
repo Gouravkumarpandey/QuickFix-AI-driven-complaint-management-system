@@ -422,8 +422,7 @@ router.get(
       ];
     }
     // Personal scope must intersect every queue, including unassigned.
-    if (selected.mine)
-      (query.$and ||= []).push({ assignedTo: req.member._id });
+    if (selected.mine) (query.$and ||= []).push({ assignedTo: req.member._id });
 
     if (selected.search)
       query.$or = ["subject", "number"].map((field) => ({
@@ -563,6 +562,11 @@ router.post(
     const input = validate(
       Joi.object({
         text: text.min(1).required(),
+        html: Joi.string().max(50000),
+        attachments: Joi.array()
+          .items(Joi.string().hex().length(24))
+          .unique()
+          .max(10),
         internal: Joi.boolean().default(false),
       }),
       req.body,

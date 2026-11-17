@@ -46,6 +46,7 @@ export const Workspace = model("Workspace", {
     expiresAt: Date,
     status: String,
     provider: String,
+    paymentId: String,
   },
   ssoEnabled: { type: Boolean, default: false },
   aiAutomation: { type: Boolean, default: false },
@@ -171,6 +172,7 @@ export const Message = model(
     author: String,
     authorRole: String,
     text: String,
+    html: String,
     internal: { type: Boolean, default: false },
     attachments: [Schema.Types.ObjectId],
     externalId: String,
@@ -236,6 +238,10 @@ export const Connector = model("WorkspaceConnector", {
   token: { type: String, select: false },
   verifyTokenHash: { type: String, select: false },
   config: Schema.Types.Mixed,
+  cursor: Schema.Types.Mixed,
+  lastSyncAt: Date,
+  syncError: String,
+  syncLockedUntil: Date,
 });
 export const Job = model("WorkspaceJob", {
   workspace: id,
@@ -358,6 +364,7 @@ export const AIEvaluation = model("WorkspaceAIEvaluation", {
   actor: String,
 });
 export const BillingOrder = model("WorkspaceBillingOrder", {
+  recurringId: String,
   workspace: id,
   orderId: { type: String, unique: true },
   paymentId: { type: String, unique: true, sparse: true },
@@ -401,4 +408,75 @@ export const ChannelIdentity = model(
 export const InvoiceSequence = model("WorkspaceInvoiceSequence", {
   _id: String,
   value: { type: Number, default: 0 },
+});
+
+export const VoiceCall = model("WorkspaceVoiceCall", {
+  workspace: id,
+  ticket: id,
+  connector: id,
+  callSid: { type: String, unique: true },
+  direction: String,
+  status: String,
+  recordingSid: String,
+  recordingDuration: Number,
+  transcription: String,
+  recordingConsent: Boolean,
+});
+export const ProvisionKey = model("WorkspaceProvisionKey", {
+  workspace: id,
+  hash: { type: String, select: false },
+  expiresAt: Date,
+});
+export const ProvisionUser = model(
+  "WorkspaceProvisionUser",
+  { workspace: id, member: id, externalId: String, userName: String },
+  [
+    [{ workspace: 1, externalId: 1 }, { unique: true }],
+    [{ workspace: 1, member: 1 }, { unique: true }],
+  ],
+);
+export const RecurringPlan = model("WorkspaceRecurringPlan", {
+  providerPlanId: String,
+  workspace: id,
+  requestKey: { type: String, unique: true },
+  subscriptionId: { type: String, sparse: true, unique: true },
+  plan: String,
+  seats: Number,
+  total: Number,
+  seller: Schema.Types.Mixed,
+  customer: Schema.Types.Mixed,
+  taxRate: Number,
+  amount: Schema.Types.Mixed,
+  status: String,
+  currentEnd: Date,
+  error: String,
+});
+export const AccountingDocument = model(
+  "WorkspaceAccountingDocument",
+  {
+    workspace: id,
+    invoice: id,
+    kind: String,
+    number: { type: String, unique: true },
+    amount: Number,
+    reason: String,
+    acknowledgement: Schema.Types.Mixed,
+    reviewedBy: id,
+    reviewedAt: Date,
+  },
+  [
+    [
+      { workspace: 1, invoice: 1, kind: 1 },
+      { unique: true, partialFilterExpression: { kind: "issued-invoice" } },
+    ],
+  ],
+);
+export const AIBenchmark = model("WorkspaceAIBenchmark", {
+  workspace: id,
+  name: String,
+  cases: Schema.Types.Mixed,
+  results: Schema.Types.Mixed,
+  status: { type: String, default: "queued" },
+  passRate: Number,
+  completedAt: Date,
 });

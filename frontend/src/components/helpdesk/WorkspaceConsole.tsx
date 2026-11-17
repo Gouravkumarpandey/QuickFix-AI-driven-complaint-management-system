@@ -1,4 +1,7 @@
 import OperationsDashboard from "./OperationsDashboard";
+import TicketTable from "./advanced/TicketTable";
+import RichComposer, { RichBody } from "./advanced/RichComposer";
+import AdvancedSetup from "./advanced/AdvancedSetup";
 import EnterpriseView, { TicketChannelActions } from "./EnterpriseViews";
 import {
   LayoutDashboard,
@@ -10,7 +13,13 @@ import {
   PanelLeftClose,
   Menu,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { Link } from "react-router-dom";
 import api from "../../utils/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -99,6 +108,7 @@ interface Ticket {
 interface Message {
   _id: string;
   text: string;
+  html?: string;
   author: string;
   authorRole: string;
   internal: boolean;
@@ -240,6 +250,7 @@ export function WorkspaceConsole() {
     ["AI studio", Sparkles],
     ["Migration", Database],
     ["Readiness", Server],
+    ["Advanced setup", Settings],
   ] as const;
   return (
     <div className="min-h-screen bg-[#f5f7f9] text-slate-900">
@@ -451,6 +462,7 @@ export function WorkspaceConsole() {
                                         "AI studio",
                                         "Migration",
                                         "Readiness",
+                                        "Advanced setup",
                                       ].includes(label)
                                     ? manage
                                     : ["owner", "admin", "analyst"].includes(
@@ -502,6 +514,15 @@ export function WorkspaceConsole() {
                 }}
               />
             )}
+            {tab === "Advanced setup" && manage && (
+              <AdvancedSetup
+                key={workspace._id}
+                workspaceId={workspace._id}
+                slug={workspace.slug}
+                role={member.role}
+                run={run}
+              />
+            )}
             {(([
               "Channels",
               "India billing",
@@ -540,7 +561,11 @@ export function WorkspaceConsole() {
               />
             )}
             {tab === "Customers" && work && (
-              <ContactsView key={workspace._id} workspace={workspace} run={run} />
+              <ContactsView
+                key={workspace._id}
+                workspace={workspace}
+                run={run}
+              />
             )}
             {tab === "Tools" && staff && (
               <ToolsView
@@ -570,7 +595,12 @@ export function WorkspaceConsole() {
               />
             )}
             {tab === "Connections" && manage && (
-              <ConnectionsView key={workspace._id} workspace={workspace} run={run} busy={busy} />
+              <ConnectionsView
+                key={workspace._id}
+                workspace={workspace}
+                run={run}
+                busy={busy}
+              />
             )}
             {tab === "Billing" && manage && (
               <BillingView
@@ -584,7 +614,11 @@ export function WorkspaceConsole() {
             )}
             {tab === "Reports" &&
               ["owner", "admin", "analyst"].includes(member.role) && (
-                <ReportsView key={workspace._id} workspace={workspace} run={run} />
+                <ReportsView
+                  key={workspace._id}
+                  workspace={workspace}
+                  run={run}
+                />
               )}
           </>
         )}
@@ -653,6 +687,10 @@ function InboxView({
     [members, setMembers] = useState<Member[]>([]),
     [search, setSearch] = useState(""),
     [status, setStatus] = useState(""),
+    [tableMode, setTableMode] = useState(false),
+    [richMode, setRichMode] = useState(false),
+    [replyHTML, setReplyHTML] = useState(""),
+    [replyFiles, setReplyFiles] = useState<string[]>([]),
     [channel, setChannel] = useState(""),
     [mine, setMine] = useState(member.role === "agent"),
     [page, setPage] = useState(1),
@@ -685,7 +723,9 @@ function InboxView({
       }[];
       tracking: { status: string; estimatedDelivery?: string } | null;
     } | null>(null),
-    [files, setFiles] = useState<{ _id: string; name: string }[]>([]);
+    [files, setFiles] = useState<
+      { _id: string; name: string; internal?: boolean }[]
+    >([]);
   const staff = member.role !== "customer";
   const listRequest = useRef(0);
   const currentSelection = useRef(selected);
@@ -693,18 +733,21 @@ function InboxView({
   const pageSize = 30;
   const load = useCallback(async () => {
     const request = ++listRequest.current;
-    const { data } = await api.get<{ tickets: Ticket[]; total: number }>(base + "/tickets", {
-      params: {
-        page,
-        limit: pageSize,
-        ...(mine ? { mine: true } : {}),
-        ...(channel ? { channel } : {}),
-        ...(search ? { search } : {}),
-        ...(status ? { status } : {}),
-        ...(bucket ? { bucket } : {}),
-        ...(view ? { view } : {}),
+    const { data } = await api.get<{ tickets: Ticket[]; total: number }>(
+      base + "/tickets",
+      {
+        params: {
+          page,
+          limit: pageSize,
+          ...(mine ? { mine: true } : {}),
+          ...(channel ? { channel } : {}),
+          ...(search ? { search } : {}),
+          ...(status ? { status } : {}),
+          ...(bucket ? { bucket } : {}),
+          ...(view ? { view } : {}),
+        },
       },
-    });
+    );
     if (request !== listRequest.current) return;
     const lastPage = Math.max(1, Math.ceil(data.total / pageSize));
     if (page > lastPage) {
@@ -742,9 +785,9 @@ function InboxView({
     const { data } = await api.get<{ ticket: Ticket; messages: Message[] }>(
       `${base}/tickets/${selected}`,
     );
-    const attachments = await api.get<{ _id: string; name: string }[]>(
-      `${base}/tickets/${selected}/attachments`,
-    );
+    const attachments = await api.get<
+      { _id: string; name: string; internal?: boolean }[]
+    >(`${base}/tickets/${selected}/attachments`);
     if (currentSelection.current !== selected) return;
     setTicket(data.ticket);
     setMessages(data.messages);
@@ -759,6 +802,9 @@ function InboxView({
     setSources([]);
     setOrderInfo(null);
     setInternal(false);
+    setRichMode(false);
+    setReplyHTML("");
+    setReplyFiles([]);
     setReply("");
     if (!selected) return;
     let active = true;
@@ -796,643 +842,783 @@ function InboxView({
       await load();
     });
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-5">
-      <section className="bg-white border rounded-xl overflow-hidden">
-        <div className="p-4 border-b flex items-center justify-between">
-          <h2 className="font-semibold">Support inbox</h2>
-          <button className={secondary} onClick={() => setCreating(!creating)}>
-            <Plus size={16} />
-            <span className="sr-only">New ticket</span>
-          </button>
-        </div>
-        <div className="p-3 space-y-2">
-          <select
-            aria-label="Ticket queue"
-            className={control}
-            value={bucket}
-            onChange={(e) => { setBucket(e.target.value); setPage(1); }}
-          >
-            <option value="">All tickets</option>
-            <option value="open">Unresolved</option>
-            <option value="unassigned">Unassigned</option>
-            <option value="overdue">Overdue</option>
-            <option value="due-today">Due in 24 hours</option>
-            <option value="resolved">Resolved & closed</option>
-          </select>
-          <input
-            className={control}
-            placeholder="Search tickets"
-            aria-label="Search tickets"
-            value={search}
-            onChange={(event) => { setSearch(event.target.value); setPage(1); }}
-          />
-          <div className="flex gap-2">
-            <select
-              className={control}
-              aria-label="Filter status"
-              value={status}
-              onChange={(event) => { setStatus(event.target.value); setPage(1); }}
-            >
-              <option value="">All statuses</option>
-              {workspace.settings.statuses.map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-            {staff && (
-              <select
-                aria-label="Saved view"
-                className={control}
-                value={view}
-                onChange={(event) => { setView(event.target.value); setPage(1); }}
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <button className={secondary} onClick={() => setTableMode(!tableMode)}>
+          {tableMode ? "Conversation view" : "Table and bulk actions"}
+        </button>
+      </div>
+      {tableMode ? (
+        <TicketTable
+          workspaceId={workspace._id}
+          role={member.role}
+          statuses={workspace.settings.statuses}
+          run={run}
+          onOpen={(id) => {
+            setSelected(id);
+            setTableMode(false);
+          }}
+        />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-5">
+          <section className="bg-white border rounded-xl overflow-hidden">
+            <div className="p-4 border-b flex items-center justify-between">
+              <h2 className="font-semibold">Support inbox</h2>
+              <button
+                className={secondary}
+                onClick={() => setCreating(!creating)}
               >
-                <option value="">Saved views</option>
-                {views.map((item) => (
-                  <option value={item._id} key={item._id}>
-                    {item.name}
+                <Plus size={16} />
+                <span className="sr-only">New ticket</span>
+              </button>
+            </div>
+            <div className="p-3 space-y-2">
+              <select
+                aria-label="Ticket queue"
+                className={control}
+                value={bucket}
+                onChange={(e) => {
+                  setBucket(e.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="">All tickets</option>
+                <option value="open">Unresolved</option>
+                <option value="unassigned">Unassigned</option>
+                <option value="overdue">Overdue</option>
+                <option value="due-today">Due in 24 hours</option>
+                <option value="resolved">Resolved & closed</option>
+              </select>
+              <input
+                className={control}
+                placeholder="Search tickets"
+                aria-label="Search tickets"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setPage(1);
+                }}
+              />
+              <div className="flex gap-2">
+                <select
+                  className={control}
+                  aria-label="Filter status"
+                  value={status}
+                  onChange={(event) => {
+                    setStatus(event.target.value);
+                    setPage(1);
+                  }}
+                >
+                  <option value="">All statuses</option>
+                  {workspace.settings.statuses.map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
+                {staff && (
+                  <select
+                    aria-label="Saved view"
+                    className={control}
+                    value={view}
+                    onChange={(event) => {
+                      setView(event.target.value);
+                      setPage(1);
+                    }}
+                  >
+                    <option value="">Saved views</option>
+                    {views.map((item) => (
+                      <option value={item._id} key={item._id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <select
+                aria-label="Filter channel"
+                className={control}
+                value={channel}
+                onChange={(event) => {
+                  setChannel(event.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="">All channels</option>
+                {[
+                  "web",
+                  "chat",
+                  "email",
+                  "whatsapp",
+                  "phone",
+                  "instagram",
+                  "messenger",
+                ].map((value) => (
+                  <option key={value} value={value}>
+                    {value}
                   </option>
                 ))}
               </select>
-            )}
-          </div>
-          <select
-            aria-label="Filter channel"
-            className={control}
-            value={channel}
-            onChange={(event) => { setChannel(event.target.value); setPage(1); }}
-          >
-            <option value="">All channels</option>
-            {["web", "chat", "email", "whatsapp", "phone", "instagram", "messenger"].map((value) => (
-              <option key={value} value={value}>{value}</option>
-            ))}
-          </select>
-          {staff && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={mine}
-                onChange={(event) => { setMine(event.target.checked); setPage(1); }}
-              />
-              Assigned to me
-            </label>
-          )}
-        </div>
-        <div className="divide-y max-h-[680px] overflow-auto">
-          {tickets.length === 0 && (
-            <p className="p-8 text-sm text-slate-400">
-              No tickets match this view. Create a ticket or connect an incoming
-              channel.
-            </p>
-          )}
-          {tickets.map((item) => (
-            <button
-              key={item._id}
-              onClick={() => setSelected(item._id)}
-              className={`block w-full text-left p-4 hover:bg-blue-50 ${selected === item._id ? "bg-blue-50 border-l-4 border-blue-500" : ""}`}
-            >
-              <div className="text-xs text-slate-400 flex justify-between">
-                <span>{item.number}</span>
-                <span>{item.channel}</span>
-              </div>
-              <h3 className="font-medium text-sm my-2">{item.subject}</h3>
-              <div className="flex gap-2 text-xs">
-                <span className="bg-slate-100 px-2 py-1 rounded">
-                  {item.status}
-                </span>
-                <span
-                  className={
-                    item.priority === "Critical"
-                      ? "text-red-600"
-                      : "text-slate-500"
-                  }
-                >
-                  {item.priority}
-                </span>
-                {item.sla.breached && (
-                  <span className="text-red-600">SLA breached</span>
-                )}
-              </div>
-            </button>
-          ))}
-        </div>
-        <div className="border-t p-3 flex items-center justify-between gap-2 text-xs">
-          <span role="status">{total ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}` : "0 tickets"}</span>
-          <div className="flex gap-2">
-            <button className={secondary} disabled={busy || page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
-            <button className={secondary} disabled={busy || page * pageSize >= total} onClick={() => setPage(page + 1)}>Next</button>
-          </div>
-        </div>
-      </section>
-      <section className="min-w-0 bg-white border rounded-xl p-5 min-h-[600px]">
-        {creating ? (
-          <form
-            className="space-y-4 max-w-xl"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void run(async () => {
-                const { data } = await api.post<Ticket>(base + "/tickets", {
-                  subject,
-                  description,
-                  ...(email ? { email } : {}),
-                  customFields: fields,
-                });
-                setCreating(false);
-                setSubject("");
-                setDescription("");
-                setEmail("");
-                setFields({});
-                await load();
-                setSelected(data._id);
-              }, "Ticket created.");
-            }}
-          >
-            <h2 className="text-xl font-semibold">New support ticket</h2>
-            {staff && (
-              <label className="block text-sm">
-                Customer email
-                <input
-                  type="email"
-                  className={control}
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                />
-              </label>
-            )}
-            <label className="block text-sm">
-              Subject
-              <input
-                required
-                minLength={3}
-                className={control}
-                value={subject}
-                onChange={(event) => setSubject(event.target.value)}
-              />
-            </label>
-            <label className="block text-sm">
-              How can we help?
-              <textarea
-                required
-                minLength={3}
-                rows={5}
-                className={control}
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-              />
-            </label>
-            <CustomFields
-              fields={workspace.settings.customFields}
-              values={fields}
-              onChange={setFields}
-            />
-            <div className="flex gap-2">
-              <button disabled={busy} className={button}>
-                Create ticket
-              </button>
-              <button
-                type="button"
-                className={secondary}
-                onClick={() => setCreating(false)}
-              >
-                Cancel
-              </button>
+              {staff && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={mine}
+                    onChange={(event) => {
+                      setMine(event.target.checked);
+                      setPage(1);
+                    }}
+                  />
+                  Assigned to me
+                </label>
+              )}
             </div>
-          </form>
-        ) : ticket ? (
-          <>
-            <div className="border-b pb-4">
-              <p className="text-xs text-blue-600 mb-2">
-                {ticket.number} · {ticket.channel}
-              </p>
-              <h2 className="text-xl font-semibold">{ticket.subject}</h2>
-              {viewers.length > 0 && (
-                <p className="mt-2 text-xs text-amber-700">
-                  Also viewing:{" "}
-                  {viewers.map((viewer) => viewer.name).join(", ")}. Refresh
-                  before changing ticket details.
+            <div className="divide-y max-h-[680px] overflow-auto">
+              {tickets.length === 0 && (
+                <p className="p-8 text-sm text-slate-400">
+                  No tickets match this view. Create a ticket or connect an
+                  incoming channel.
                 </p>
               )}
-              <div className="flex flex-wrap gap-3 mt-4">
-                {staff ? (
-                  <>
-                    <select
-                      aria-label="Ticket status"
-                      className={control + " max-w-[180px]"}
-                      value={ticket.status}
-                      onChange={(event) =>
-                        void patch({ status: event.target.value })
-                      }
-                    >
-                      {workspace.settings.statuses.map((value) => (
-                        <option key={value}>{value}</option>
-                      ))}
-                    </select>
-                    <select
-                      aria-label="Ticket priority"
-                      className={control + " max-w-[120px]"}
-                      value={ticket.priority}
-                      onChange={(event) =>
-                        void patch({ priority: event.target.value })
-                      }
-                    >
-                      {["Low", "Medium", "High", "Critical"].map((value) => (
-                        <option key={value}>{value}</option>
-                      ))}
-                    </select>
-                    <select
-                      aria-label="Assigned agent"
-                      className={control + " max-w-[200px]"}
-                      value={
-                        typeof ticket.assignedTo === "string"
-                          ? ticket.assignedTo
-                          : ticket.assignedTo?._id || ""
-                      }
-                      onChange={(event) =>
-                        void patch({ assignedTo: event.target.value || null })
-                      }
-                    >
-                      <option value="">Unassigned</option>
-                      {members
-                        .filter(
-                          (item) =>
-                            item.active &&
-                            ["owner", "admin", "agent"].includes(item.role),
-                        )
-                        .map((item) => (
-                          <option key={item._id} value={item._id}>
-                            {item.name || item.email}
-                          </option>
-                        ))}
-                    </select>
-                  </>
-                ) : (
-                  <span className="text-sm bg-blue-50 px-3 py-1 rounded">
-                    {ticket.status}
-                  </span>
-                )}
-              </div>
-              {staff && ticket.guest && !ticket.guestVerified && (
-                <div className="mt-3 rounded bg-amber-50 p-3 text-xs text-amber-800">
-                  This guest email is not verified. Verify identity before
-                  sharing order details or merging conversations.{" "}
-                  <button
-                    className="underline ml-2"
-                    onClick={() =>
-                      void run(async () => {
-                        await api.post(
-                          `${base}/tickets/${selected}/verify-customer`,
-                        );
-                      }, "Verification email queued. The customer must open the emailed link.")
-                    }
-                  >
-                    Send verification email
-                  </button>
-                </div>
-              )}
-              <p className="text-xs text-slate-400 mt-3">
-                First response due: {date(ticket.sla.firstDue)} · Resolution
-                due: {date(ticket.sla.resolutionDue)}
-              </p>
-            </div>
-            <div className="space-y-3 py-5 max-h-[420px] overflow-auto">
-              {messages.map((message) => (
-                <div
-                  key={message._id}
-                  className={`rounded-xl p-4 ${message.internal ? "bg-amber-50 border border-amber-100" : message.authorRole === "customer" ? "bg-slate-50" : "bg-blue-50"}`}
+              {tickets.map((item) => (
+                <button
+                  key={item._id}
+                  onClick={() => setSelected(item._id)}
+                  className={`block w-full text-left p-4 hover:bg-blue-50 ${selected === item._id ? "bg-blue-50 border-l-4 border-blue-500" : ""}`}
                 >
-                  <div className="text-xs text-slate-500 mb-2 flex justify-between">
-                    <span>
-                      {message.internal ? "Private note · " : ""}
-                      {message.authorRole}
-                    </span>
-                    <span>{date(message.createdAt)}</span>
+                  <div className="text-xs text-slate-400 flex justify-between">
+                    <span>{item.number}</span>
+                    <span>{item.channel}</span>
                   </div>
-                  <p className="whitespace-pre-wrap break-words text-sm">
-                    {message.text}
-                  </p>
-                  {["queued", "failed"].includes(message.delivery) && (
-                    <p className="text-xs text-amber-700 mt-2">
-                      Delivery {message.delivery}
-                    </p>
-                  )}
-                </div>
+                  <h3 className="font-medium text-sm my-2">{item.subject}</h3>
+                  <div className="flex gap-2 text-xs">
+                    <span className="bg-slate-100 px-2 py-1 rounded">
+                      {item.status}
+                    </span>
+                    <span
+                      className={
+                        item.priority === "Critical"
+                          ? "text-red-600"
+                          : "text-slate-500"
+                      }
+                    >
+                      {item.priority}
+                    </span>
+                    {item.sla.breached && (
+                      <span className="text-red-600">SLA breached</span>
+                    )}
+                  </div>
+                </button>
               ))}
             </div>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void run(
-                  async () => {
-                    await api.post(`${base}/tickets/${selected}/messages`, {
-                      text: reply,
-                      internal,
+            <div className="border-t p-3 flex items-center justify-between gap-2 text-xs">
+              <span role="status">
+                {total
+                  ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`
+                  : "0 tickets"}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  className={secondary}
+                  disabled={busy || page <= 1}
+                  onClick={() => setPage(page - 1)}
+                >
+                  Previous
+                </button>
+                <button
+                  className={secondary}
+                  disabled={busy || page * pageSize >= total}
+                  onClick={() => setPage(page + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </section>
+          <section className="min-w-0 bg-white border rounded-xl p-5 min-h-[600px]">
+            {creating ? (
+              <form
+                className="space-y-4 max-w-xl"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void run(async () => {
+                    const { data } = await api.post<Ticket>(base + "/tickets", {
+                      subject,
+                      description,
+                      ...(email ? { email } : {}),
+                      customFields: fields,
                     });
-                    setReply("");
-                    await detail();
+                    setCreating(false);
+                    setSubject("");
+                    setDescription("");
+                    setEmail("");
+                    setFields({});
                     await load();
-                  },
-                  internal ? "Private note saved." : "Reply saved.",
-                );
-              }}
-              className="space-y-3 border-t pt-4"
-            >
-              <div className="flex flex-wrap gap-2 items-center">
+                    setSelected(data._id);
+                  }, "Ticket created.");
+                }}
+              >
+                <h2 className="text-xl font-semibold">New support ticket</h2>
                 {staff && (
-                  <>
-                    <label className="text-sm">
+                  <label className="block text-sm">
+                    Customer email
+                    <input
+                      type="email"
+                      className={control}
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                    />
+                  </label>
+                )}
+                <label className="block text-sm">
+                  Subject
+                  <input
+                    required
+                    minLength={3}
+                    className={control}
+                    value={subject}
+                    onChange={(event) => setSubject(event.target.value)}
+                  />
+                </label>
+                <label className="block text-sm">
+                  How can we help?
+                  <textarea
+                    required
+                    minLength={3}
+                    rows={5}
+                    className={control}
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                  />
+                </label>
+                <CustomFields
+                  fields={workspace.settings.customFields}
+                  values={fields}
+                  onChange={setFields}
+                />
+                <div className="flex gap-2">
+                  <button disabled={busy} className={button}>
+                    Create ticket
+                  </button>
+                  <button
+                    type="button"
+                    className={secondary}
+                    onClick={() => setCreating(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : ticket ? (
+              <>
+                <div className="border-b pb-4">
+                  <p className="text-xs text-blue-600 mb-2">
+                    {ticket.number} · {ticket.channel}
+                  </p>
+                  <h2 className="text-xl font-semibold">{ticket.subject}</h2>
+                  {viewers.length > 0 && (
+                    <p className="mt-2 text-xs text-amber-700">
+                      Also viewing:{" "}
+                      {viewers.map((viewer) => viewer.name).join(", ")}. Refresh
+                      before changing ticket details.
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-3 mt-4">
+                    {staff ? (
+                      <>
+                        <select
+                          aria-label="Ticket status"
+                          className={control + " max-w-[180px]"}
+                          value={ticket.status}
+                          onChange={(event) =>
+                            void patch({ status: event.target.value })
+                          }
+                        >
+                          {workspace.settings.statuses.map((value) => (
+                            <option key={value}>{value}</option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label="Ticket priority"
+                          className={control + " max-w-[120px]"}
+                          value={ticket.priority}
+                          onChange={(event) =>
+                            void patch({ priority: event.target.value })
+                          }
+                        >
+                          {["Low", "Medium", "High", "Critical"].map(
+                            (value) => (
+                              <option key={value}>{value}</option>
+                            ),
+                          )}
+                        </select>
+                        <select
+                          aria-label="Assigned agent"
+                          className={control + " max-w-[200px]"}
+                          value={
+                            typeof ticket.assignedTo === "string"
+                              ? ticket.assignedTo
+                              : ticket.assignedTo?._id || ""
+                          }
+                          onChange={(event) =>
+                            void patch({
+                              assignedTo: event.target.value || null,
+                            })
+                          }
+                        >
+                          <option value="">Unassigned</option>
+                          {members
+                            .filter(
+                              (item) =>
+                                item.active &&
+                                ["owner", "admin", "agent"].includes(item.role),
+                            )
+                            .map((item) => (
+                              <option key={item._id} value={item._id}>
+                                {item.name || item.email}
+                              </option>
+                            ))}
+                        </select>
+                      </>
+                    ) : (
+                      <span className="text-sm bg-blue-50 px-3 py-1 rounded">
+                        {ticket.status}
+                      </span>
+                    )}
+                  </div>
+                  {staff && ticket.guest && !ticket.guestVerified && (
+                    <div className="mt-3 rounded bg-amber-50 p-3 text-xs text-amber-800">
+                      This guest email is not verified. Verify identity before
+                      sharing order details or merging conversations.{" "}
+                      <button
+                        className="underline ml-2"
+                        onClick={() =>
+                          void run(async () => {
+                            await api.post(
+                              `${base}/tickets/${selected}/verify-customer`,
+                            );
+                          }, "Verification email queued. The customer must open the emailed link.")
+                        }
+                      >
+                        Send verification email
+                      </button>
+                    </div>
+                  )}
+                  <p className="text-xs text-slate-400 mt-3">
+                    First response due: {date(ticket.sla.firstDue)} · Resolution
+                    due: {date(ticket.sla.resolutionDue)}
+                  </p>
+                </div>
+                <div className="space-y-3 py-5 max-h-[420px] overflow-auto">
+                  {messages.map((message) => (
+                    <div
+                      key={message._id}
+                      className={`rounded-xl p-4 ${message.internal ? "bg-amber-50 border border-amber-100" : message.authorRole === "customer" ? "bg-slate-50" : "bg-blue-50"}`}
+                    >
+                      <div className="text-xs text-slate-500 mb-2 flex justify-between">
+                        <span>
+                          {message.internal ? "Private note · " : ""}
+                          {message.authorRole}
+                        </span>
+                        <span>{date(message.createdAt)}</span>
+                      </div>
+                      {message.html ? (
+                        <RichBody html={message.html} />
+                      ) : (
+                        <p className="whitespace-pre-wrap break-words text-sm">
+                          {message.text}
+                        </p>
+                      )}
+                      {["queued", "failed"].includes(message.delivery) && (
+                        <p className="text-xs text-amber-700 mt-2">
+                          Delivery {message.delivery}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void run(
+                      async () => {
+                        await api.post(`${base}/tickets/${selected}/messages`, {
+                          text: reply,
+                          internal,
+                          ...(richMode && replyHTML ? { html: replyHTML } : {}),
+                          attachments: replyFiles,
+                        });
+                        setReply("");
+                        setReplyHTML("");
+                        setReplyFiles([]);
+                        await detail();
+                        await load();
+                      },
+                      internal ? "Private note saved." : "Reply saved.",
+                    );
+                  }}
+                  className="space-y-3 border-t pt-4"
+                >
+                  <div className="flex flex-wrap gap-2 items-center">
+                    {staff && (
+                      <>
+                        <label className="text-sm">
+                          <input
+                            type="checkbox"
+                            checked={internal}
+                            onChange={(event) => {
+                              setInternal(event.target.checked);
+                              setReplyFiles([]);
+                            }}
+                          />{" "}
+                          Private note
+                        </label>
+                        <CannedSelect base={base} select={setReply} />
+                        <select
+                          aria-label="Apply macro"
+                          className={control + " max-w-[180px]"}
+                          value=""
+                          onChange={(event) =>
+                            void run(async () => {
+                              await api.post(
+                                `${base}/tickets/${selected}/macros/${event.target.value}`,
+                              );
+                              await detail();
+                              await load();
+                            }, "Macro applied.")
+                          }
+                        >
+                          <option value="">Apply macro…</option>
+                          {macros.map((item) => (
+                            <option key={item._id} value={item._id}>
+                              {item.name}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+                  </div>
+                  {staff && ticket.channel === "email" && (
+                    <label className="text-sm flex items-center gap-2">
                       <input
                         type="checkbox"
-                        checked={internal}
-                        onChange={(event) => setInternal(event.target.checked)}
-                      />{" "}
-                      Private note
+                        checked={richMode}
+                        onChange={(e) => {
+                          setRichMode(e.target.checked);
+                          setReplyHTML("");
+                        }}
+                      />
+                      Format email reply
                     </label>
-                    <CannedSelect base={base} select={setReply} />
-                    <select
-                      aria-label="Apply macro"
-                      className={control + " max-w-[180px]"}
-                      value=""
-                      onChange={(event) =>
-                        void run(async () => {
-                          await api.post(
-                            `${base}/tickets/${selected}/macros/${event.target.value}`,
-                          );
-                          await detail();
-                          await load();
-                        }, "Macro applied.")
+                  )}
+                  {richMode ? (
+                    <RichComposer
+                      value={reply}
+                      onChange={(text, html) => {
+                        setReply(text);
+                        setReplyHTML(html);
+                      }}
+                    />
+                  ) : (
+                    <textarea
+                      required
+                      rows={4}
+                      maxLength={10000}
+                      className={control}
+                      placeholder={
+                        internal
+                          ? "Only your support team can see this note."
+                          : "Write your response…"
                       }
-                    >
-                      <option value="">Apply macro…</option>
-                      {macros.map((item) => (
-                        <option key={item._id} value={item._id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </>
-                )}
-              </div>
-              <textarea
-                required
-                rows={4}
-                maxLength={10000}
-                className={control}
-                placeholder={
-                  internal
-                    ? "Only your support team can see this note."
-                    : "Write your response…"
-                }
-                value={reply}
-                onChange={(event) => setReply(event.target.value)}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                <button className={button} disabled={busy || !reply.trim()}>
-                  <span className="flex gap-2 items-center">
-                    <Send size={15} />
-                    {internal ? "Save note" : "Send reply"}
-                  </span>
-                </button>
-                {staff && (
-                  <>
-                    <select
-                      aria-label="AI draft language"
-                      className={control + " max-w-[110px]"}
-                      value={language}
-                      onChange={(event) => setLanguage(event.target.value)}
-                    >
-                      {["en", "hi", "hinglish", "bn", "ta", "te", "mr"].map(
-                        (value) => (
-                          <option key={value}>{value}</option>
-                        ),
-                      )}
-                    </select>
+                      value={reply}
+                      onChange={(event) => setReply(event.target.value)}
+                    />
+                  )}
+                  {ticket.channel === "email" && files.length > 0 && (
+                    <fieldset className="text-xs space-y-2">
+                      <legend className="text-slate-500 mb-2">
+                        Attach scanned files to this reply
+                      </legend>
+                      {files
+                        .filter((f) => internal || !f.internal)
+                        .map((f) => (
+                          <label
+                            key={f._id}
+                            className="flex items-center gap-2"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={replyFiles.includes(f._id)}
+                              onChange={(e) =>
+                                setReplyFiles((v) =>
+                                  e.target.checked
+                                    ? [...v, f._id]
+                                    : v.filter((id) => id !== f._id),
+                                )
+                              }
+                            />
+                            {f.name}
+                            {f.internal ? " · Private" : ""}
+                          </label>
+                        ))}
+                    </fieldset>
+                  )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button className={button} disabled={busy || !reply.trim()}>
+                      <span className="flex gap-2 items-center">
+                        <Send size={15} />
+                        {internal ? "Save note" : "Send reply"}
+                      </span>
+                    </button>
+                    {staff && (
+                      <>
+                        <select
+                          aria-label="AI draft language"
+                          className={control + " max-w-[110px]"}
+                          value={language}
+                          onChange={(event) => setLanguage(event.target.value)}
+                        >
+                          {["en", "hi", "hinglish", "bn", "ta", "te", "mr"].map(
+                            (value) => (
+                              <option key={value}>{value}</option>
+                            ),
+                          )}
+                        </select>
+                        <button
+                          type="button"
+                          className={secondary}
+                          disabled={busy}
+                          onClick={() =>
+                            void run(async () => {
+                              const { data } = await api.post<{
+                                draft: string | null;
+                                sources: typeof sources;
+                                message?: string;
+                              }>(`${base}/tickets/${selected}/ai-draft`, {
+                                language,
+                              });
+                              setDraft(
+                                data.draft ||
+                                  data.message ||
+                                  "No supported draft.",
+                              );
+                              setSources(data.sources);
+                            })
+                          }
+                        >
+                          Draft from knowledge base
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       className={secondary}
-                      disabled={busy}
-                      onClick={() =>
-                        void run(async () => {
-                          const { data } = await api.post<{
-                            draft: string | null;
-                            sources: typeof sources;
-                            message?: string;
-                          }>(`${base}/tickets/${selected}/ai-draft`, {
-                            language,
-                          });
-                          setDraft(
-                            data.draft || data.message || "No supported draft.",
-                          );
-                          setSources(data.sources);
-                        })
-                      }
+                      onClick={() => void run(detail)}
+                      aria-label="Refresh conversation"
                     >
-                      Draft from knowledge base
+                      <RefreshCw size={16} />
                     </button>
-                  </>
-                )}
-                <button
-                  type="button"
-                  className={secondary}
-                  onClick={() => void run(detail)}
-                  aria-label="Refresh conversation"
-                >
-                  <RefreshCw size={16} />
-                </button>
-              </div>
-            </form>
-            {draft && (
-              <div className="my-4 bg-violet-50 rounded-xl p-4 text-sm">
-                <h3 className="font-medium mb-2">
-                  Review this AI suggestion before sending
-                </h3>
-                <p className="whitespace-pre-wrap">{draft}</p>
-                <ul className="text-xs my-2">
-                  {sources.map((source) => (
-                    <li key={source.citation}>
-                      [{source.citation}] {source.title}
-                    </li>
-                  ))}
-                </ul>
-                {sources.length > 0 && (
-                  <button className={secondary} onClick={() => setReply(draft)}>
-                    Use as draft
-                  </button>
-                )}
-              </div>
-            )}
-            <div className="border-t mt-5 pt-4">
-              <h3 className="text-sm font-medium mb-2">Attachments</h3>
-              <input
-                type="file"
-                accept="image/png,image/jpeg,application/pdf"
-                className="max-w-full"
-                aria-label="Upload attachment"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file)
-                    void run(async () => {
-                      await api.post(
-                        `${base}/tickets/${selected}/attachments`,
-                        file,
-                        {
-                          headers: {
-                            "Content-Type": "application/octet-stream",
-                            "X-File-Name": encodeURIComponent(file.name),
-                            "X-Attachment-Visibility": internal
-                              ? "internal"
-                              : "public",
-                          },
-                        },
-                      );
-                      await detail();
-                    }, "File scanned and uploaded.");
-                }}
-              />
-              <div className="flex flex-wrap gap-2 mt-2">
-                {files.map((file) => (
-                  <button
-                    className={secondary}
-                    key={file._id}
-                    onClick={() =>
-                      void run(async () => {
-                        const { data } = await api.get<Blob>(
-                          `${base}/tickets/${selected}/attachments/${file._id}`,
-                          { responseType: "blob" },
-                        );
-                        download(data, file.name);
-                      })
-                    }
-                  >
-                    {file.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {staff && (
-              <TicketChannelActions
-                base={base}
-                ticketId={selected}
-                channel={ticket.channel}
-                run={run}
-              />
-            )}
-            {staff && (
-              <details className="border-t mt-5 pt-3 text-sm">
-                <summary className="cursor-pointer text-slate-500">
-                  Order and shipment context
-                </summary>
-                <form
-                  className="space-y-2 mt-3"
-                  onSubmit={submit(
-                    () =>
-                      void run(async () => {
-                        const { data } = await api.get<
-                          NonNullable<typeof orderInfo>
-                        >(`${base}/tickets/${selected}/order-context`, {
-                          params: {
-                            ...(orderId ? { order: orderId } : {}),
-                            ...(awb ? { awb } : {}),
-                          },
-                        });
-                        setOrderInfo(data);
-                      }),
-                  )}
-                >
-                  <input
-                    className={control}
-                    placeholder="Shopify order number"
-                    value={orderId}
-                    onChange={(e) => setOrderId(e.target.value)}
-                  />
-                  <input
-                    className={control}
-                    placeholder="Shiprocket AWB"
-                    value={awb}
-                    onChange={(e) => setAwb(e.target.value)}
-                  />
-                  <button
-                    className={secondary}
-                    disabled={busy || (!orderId && !awb)}
-                  >
-                    Load order context
-                  </button>
+                  </div>
                 </form>
-                {orderInfo && (
-                  <div className="my-3 text-sm">
-                    {orderInfo.orders.map((order) => (
-                      <p key={order.name}>
-                        {order.name}: {order.fulfillmentStatus} ·{" "}
-                        {order.paymentStatus}
-                      </p>
-                    ))}
-                    {orderInfo.tracking && (
-                      <p>
-                        Shipment: {orderInfo.tracking.status} · Expected:{" "}
-                        {orderInfo.tracking.estimatedDelivery || "not provided"}
-                      </p>
-                    )}
-                    {!orderInfo.orders.length && !orderInfo.tracking && (
-                      <p className="text-slate-400">
-                        No connected order matches this customer. Check the
-                        order number and channel connection.
-                      </p>
+                {draft && (
+                  <div className="my-4 bg-violet-50 rounded-xl p-4 text-sm">
+                    <h3 className="font-medium mb-2">
+                      Review this AI suggestion before sending
+                    </h3>
+                    <p className="whitespace-pre-wrap">{draft}</p>
+                    <ul className="text-xs my-2">
+                      {sources.map((source) => (
+                        <li key={source.citation}>
+                          [{source.citation}] {source.title}
+                        </li>
+                      ))}
+                    </ul>
+                    {sources.length > 0 && (
+                      <button
+                        className={secondary}
+                        onClick={() => setReply(draft)}
+                      >
+                        Use as draft
+                      </button>
                     )}
                   </div>
                 )}
-              </details>
-            )}
-            {staff && (
-              <details className="border-t mt-5 pt-3 text-sm">
-                <summary className="cursor-pointer text-slate-500">
-                  Merge duplicate ticket
-                </summary>
-                <p className="my-2 text-slate-500">
-                  Only tickets from the same customer can be merged. The
-                  conversation moves to the destination.
-                </p>
-                <select
-                  className={control}
-                  value={mergeTarget}
-                  onChange={(event) => setMergeTarget(event.target.value)}
-                >
-                  <option value="">Choose destination</option>
-                  {tickets
-                    .filter((item) => item._id !== selected)
-                    .map((item) => (
-                      <option key={item._id} value={item._id}>
-                        {item.number} — {item.subject}
-                      </option>
+                <div className="border-t mt-5 pt-4">
+                  <h3 className="text-sm font-medium mb-2">Attachments</h3>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,application/pdf,audio/mpeg,audio/ogg,audio/wav,video/mp4"
+                    className="max-w-full"
+                    aria-label="Upload attachment"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file)
+                        void run(async () => {
+                          await api.post(
+                            `${base}/tickets/${selected}/attachments`,
+                            file,
+                            {
+                              headers: {
+                                "Content-Type": "application/octet-stream",
+                                "X-File-Name": encodeURIComponent(file.name),
+                                "X-Attachment-Visibility": internal
+                                  ? "internal"
+                                  : "public",
+                              },
+                            },
+                          );
+                          await detail();
+                        }, "File scanned and uploaded.");
+                    }}
+                  />
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {files.map((file) => (
+                      <button
+                        className={secondary}
+                        key={file._id}
+                        onClick={() =>
+                          void run(async () => {
+                            const { data } = await api.get<Blob>(
+                              `${base}/tickets/${selected}/attachments/${file._id}`,
+                              { responseType: "blob" },
+                            );
+                            download(data, file.name);
+                          })
+                        }
+                      >
+                        {file.name}
+                      </button>
                     ))}
-                </select>
-                <button
-                  className={secondary + " mt-2"}
-                  disabled={!mergeTarget || busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await api.post(`${base}/tickets/${selected}/merge`, {
-                        target: mergeTarget,
-                      });
-                      setSelected(mergeTarget);
-                      setMergeTarget("");
-                      await load();
-                    }, "Tickets merged.")
-                  }
-                >
-                  Merge conversation
-                </button>
-              </details>
+                  </div>
+                </div>
+                {staff && (
+                  <TicketChannelActions
+                    base={base}
+                    ticketId={selected}
+                    channel={ticket.channel}
+                    run={run}
+                  />
+                )}
+                {staff && (
+                  <details className="border-t mt-5 pt-3 text-sm">
+                    <summary className="cursor-pointer text-slate-500">
+                      Order and shipment context
+                    </summary>
+                    <form
+                      className="space-y-2 mt-3"
+                      onSubmit={submit(
+                        () =>
+                          void run(async () => {
+                            const { data } = await api.get<
+                              NonNullable<typeof orderInfo>
+                            >(`${base}/tickets/${selected}/order-context`, {
+                              params: {
+                                ...(orderId ? { order: orderId } : {}),
+                                ...(awb ? { awb } : {}),
+                              },
+                            });
+                            setOrderInfo(data);
+                          }),
+                      )}
+                    >
+                      <input
+                        className={control}
+                        placeholder="Shopify order number"
+                        value={orderId}
+                        onChange={(e) => setOrderId(e.target.value)}
+                      />
+                      <input
+                        className={control}
+                        placeholder="Shiprocket AWB"
+                        value={awb}
+                        onChange={(e) => setAwb(e.target.value)}
+                      />
+                      <button
+                        className={secondary}
+                        disabled={busy || (!orderId && !awb)}
+                      >
+                        Load order context
+                      </button>
+                    </form>
+                    {orderInfo && (
+                      <div className="my-3 text-sm">
+                        {orderInfo.orders.map((order) => (
+                          <p key={order.name}>
+                            {order.name}: {order.fulfillmentStatus} ·{" "}
+                            {order.paymentStatus}
+                          </p>
+                        ))}
+                        {orderInfo.tracking && (
+                          <p>
+                            Shipment: {orderInfo.tracking.status} · Expected:{" "}
+                            {orderInfo.tracking.estimatedDelivery ||
+                              "not provided"}
+                          </p>
+                        )}
+                        {!orderInfo.orders.length && !orderInfo.tracking && (
+                          <p className="text-slate-400">
+                            No connected order matches this customer. Check the
+                            order number and channel connection.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </details>
+                )}
+                {staff && (
+                  <details className="border-t mt-5 pt-3 text-sm">
+                    <summary className="cursor-pointer text-slate-500">
+                      Merge duplicate ticket
+                    </summary>
+                    <p className="my-2 text-slate-500">
+                      Only tickets from the same customer can be merged. The
+                      conversation moves to the destination.
+                    </p>
+                    <select
+                      className={control}
+                      value={mergeTarget}
+                      onChange={(event) => setMergeTarget(event.target.value)}
+                    >
+                      <option value="">Choose destination</option>
+                      {tickets
+                        .filter((item) => item._id !== selected)
+                        .map((item) => (
+                          <option key={item._id} value={item._id}>
+                            {item.number} — {item.subject}
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      className={secondary + " mt-2"}
+                      disabled={!mergeTarget || busy}
+                      onClick={() =>
+                        void run(async () => {
+                          await api.post(`${base}/tickets/${selected}/merge`, {
+                            target: mergeTarget,
+                          });
+                          setSelected(mergeTarget);
+                          setMergeTarget("");
+                          await load();
+                        }, "Tickets merged.")
+                      }
+                    >
+                      Merge conversation
+                    </button>
+                  </details>
+                )}
+              </>
+            ) : (
+              <div className="text-center py-28 text-slate-400">
+                <Inbox size={45} className="mx-auto mb-4" />
+                <h2 className="font-medium text-slate-700">
+                  Your conversations live here
+                </h2>
+                <p className="text-sm mt-2">
+                  Select a ticket or create a new support request.
+                </p>
+              </div>
             )}
-          </>
-        ) : (
-          <div className="text-center py-28 text-slate-400">
-            <Inbox size={45} className="mx-auto mb-4" />
-            <h2 className="font-medium text-slate-700">
-              Your conversations live here
-            </h2>
-            <p className="text-sm mt-2">
-              Select a ticket or create a new support request.
-            </p>
-          </div>
-        )}
-      </section>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import dns from "node:dns/promises";
+import { mailboxAccessToken } from "./mailAuth.js";
 import crypto from "node:crypto";
 import path from "node:path";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
@@ -208,7 +209,9 @@ export async function syncMailbox(
     servername: config.host,
     port: 993,
     secure: true,
-    auth: { user: config.user, pass: decrypt(connector.token) },
+    auth: connector.config.oauth
+      ? { user: config.user, accessToken: await mailboxAccessToken(connector) }
+      : { user: config.user, pass: decrypt(connector.token) },
     logger: false,
     tls: { servername: config.host, rejectUnauthorized: true },
     connectionTimeout: 15000,
@@ -333,6 +336,7 @@ router.put(
     connector.config = {
       ...connector.config,
       imap: { host: input.host, user: input.user, mailbox: input.mailbox },
+      oauth: undefined,
     };
     connector.token = encrypt(input.password);
     connector.cursor = undefined;

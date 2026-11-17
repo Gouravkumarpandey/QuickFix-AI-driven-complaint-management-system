@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import api from "../../utils/api";
+import Softphone from "./advanced/Softphone";
 import { ShieldCheck, CheckCircle2, AlertCircle, KeyRound } from "lucide-react";
 type Run = (action: () => Promise<void>, success?: string) => Promise<void>;
 const input =
@@ -99,6 +100,7 @@ export function SSOExchange() {
 }
 export function SSOLogin() {
   const [slug, setSlug] = useState("");
+  const [protocol, setProtocol] = useState("oidc");
   return (
     <div className="min-h-screen bg-slate-50 grid place-items-center p-5">
       <form
@@ -107,7 +109,7 @@ export function SSOLogin() {
           e.preventDefault();
           location.href = new URL(
             (api.defaults.baseURL || "/api").replace(/\/$/, "") +
-              "/sso/" +
+              (protocol === "saml" ? "/sso/saml/" : "/sso/") +
               encodeURIComponent(slug) +
               "/start",
             location.origin,
@@ -130,6 +132,17 @@ export function SSOLogin() {
             onChange={(e) => setSlug(e.target.value)}
             placeholder="your-company"
           />
+        </label>
+        <label className="block text-sm">
+          Company identity provider
+          <select
+            className={input}
+            value={protocol}
+            onChange={(e) => setProtocol(e.target.value)}
+          >
+            <option value="oidc">OpenID Connect</option>
+            <option value="saml">SAML 2.0</option>
+          </select>
         </label>
         <button className={button}>Continue with SSO</button>
         <a className="block text-sm text-teal-700" href="/login">
@@ -351,6 +364,18 @@ function SecurityView({ workspaceId, role, run, busy }: Props) {
           }
         >
           Link my SSO identity
+        </button>
+        <button
+          className={secondary + " ml-2"}
+          disabled={busy || !security.ssoEnabled}
+          onClick={() =>
+            void run(async () => {
+              const { data } = await api.post(base + "/sso/saml/link");
+              location.href = data.url;
+            })
+          }
+        >
+          Link my SAML identity
         </button>
         <a className="block text-sm text-teal-700" href="/sso">
           Open company sign-in →
@@ -770,7 +795,7 @@ const escape = (v: unknown) =>
         c
       ]!,
   );
-async function checkoutScript() {
+export async function checkoutScript() {
   if (window.Razorpay) return;
   await new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
@@ -1384,6 +1409,8 @@ export function TicketChannelActions({
   const [name, setName] = useState(""),
     [language, setLanguage] = useState("en"),
     [parameters, setParameters] = useState(""),
+    [header, setHeader] = useState(""),
+    [buttons, setButtons] = useState("[]"),
     [file, setFile] = useState(""),
     [caption, setCaption] = useState(""),
     [connection, setConnection] = useState(""),
@@ -1402,6 +1429,7 @@ export function TicketChannelActions({
         Phone, WhatsApp and customer identity
       </summary>
       <div className="space-y-3 mt-4">
+        <Softphone key={ticketId} base={base} ticketId={ticketId} run={run} />
         <button
           className={secondary}
           onClick={() =>
@@ -1443,6 +1471,8 @@ export function TicketChannelActions({
                       name,
                       language,
                       parameters: parameters ? parameters.split("\n") : [],
+                      ...(header ? { header } : {}),
+                      buttons: JSON.parse(buttons),
                     },
                   });
                 }, "WhatsApp template queued.")
@@ -1450,6 +1480,22 @@ export function TicketChannelActions({
             >
               Queue approved template
             </button>
+            <input
+              className={input}
+              aria-label="WhatsApp template header parameter"
+              placeholder="Optional text header parameter"
+              value={header}
+              onChange={(e) => setHeader(e.target.value)}
+            />
+            <label className="block text-xs">
+              Button parameters (index, type url/quick_reply, value)
+              <textarea
+                className={input + " font-mono mt-1"}
+                rows={2}
+                value={buttons}
+                onChange={(e) => setButtons(e.target.value)}
+              />
+            </label>
             <h4 className="font-medium">Send a scanned attachment</h4>
             <select
               className={input}

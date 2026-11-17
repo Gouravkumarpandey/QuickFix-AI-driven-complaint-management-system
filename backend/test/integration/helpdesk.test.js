@@ -1,4 +1,27 @@
 import analyticsEnterprise from "../../src/helpdesk/analytics.js";
+import productivity from "../../src/helpdesk/productivity.js";
+import { voiceAdmin, voicePublic } from "../../src/helpdesk/voicePlus.js";
+import { scimAdmin, scimRoutes } from "../../src/helpdesk/scim.js";
+import { samlAdmin, samlPublic } from "../../src/helpdesk/saml.js";
+import whatsappPlus from "../../src/helpdesk/whatsappPlus.js";
+import evaluationRoutes, {
+  runBenchmark,
+} from "../../src/helpdesk/evaluation.js";
+import accountingRoutes from "../../src/helpdesk/accounting.js";
+import recurringRoutes, {
+  recurringEvent,
+} from "../../src/helpdesk/recurring.js";
+import { operationsAdmin } from "../../src/helpdesk/operationsPlus.js";
+import { mailOAuthAdmin } from "../../src/helpdesk/mailOAuth.js";
+import { mailboxAccessToken } from "../../src/helpdesk/mailAuth.js";
+import {
+  AccountingDocument,
+  RecurringPlan,
+  AIBenchmark,
+  VoiceCall,
+  ProvisionUser,
+} from "../../src/helpdesk/models.js";
+import { encrypt, decrypt } from "../../src/helpdesk/connectors.js";
 import {
   securityRoutes,
   enterpriseSecurityRoutes,
@@ -6,6 +29,7 @@ import {
   base32,
 } from "../../src/helpdesk/security.js";
 import indiaBillingEnterprise, {
+  razorpayWebhook,
   applyPayment,
   amounts,
   secureHex,
@@ -144,6 +168,8 @@ before(async () => {
   app.use("/channels", channelRoutes);
   app.use("/social", socialRoutes);
   app.use("/voice", voiceRoutes);
+  app.use("/razorpay", razorpayWebhook);
+  app.use("/voice-plus", voicePublic);
   app.use(express.json());
   app.use((req, res, next) => {
     req.cookies = {};
@@ -152,6 +178,16 @@ before(async () => {
   app.use(
     "/workspaces",
     routes,
+    productivity,
+    voiceAdmin,
+    scimAdmin,
+    samlAdmin,
+    whatsappPlus,
+    accountingRoutes,
+    recurringRoutes,
+    evaluationRoutes,
+    operationsAdmin,
+    mailOAuthAdmin,
     connectorRoutes,
     billingRoutes,
     attachments,
@@ -171,6 +207,8 @@ before(async () => {
   );
   app.use("/security", securityRoutes);
   app.use("/developer", developerRoutes);
+  app.use("/scim", scimRoutes);
+  app.use("/sso", samlPublic);
   app.use("/help", publicAIRoutes, portal);
   app.use((error, req, res, next) =>
     res.status(error.statusCode || 400).json({ error: error.message }),
@@ -423,7 +461,10 @@ test("macros, automation, saved views, custom fields and collision checks operat
 });
 test("inbox pagination, personal queues and social-channel saved views preserve workspace scope", async () => {
   const first = await createTicket(alice, a);
-  const member = await Membership.findOne({ workspace: a._id, user: alice._id });
+  const member = await Membership.findOne({
+    workspace: a._id,
+    user: alice._id,
+  });
   await Ticket.updateOne({ _id: first._id }, { $set: { assignedTo: null } });
   // Equal timestamps reproduce unstable offset pagination unless ID is a tie-breaker.
   const timestamp = new Date();
@@ -442,26 +483,42 @@ test("inbox pagination, personal queues and social-channel saved views preserve 
   await createTicket(bob, b);
   const path = `/workspaces/${a._id}`;
   const firstPage = await body(await call(alice, `${path}/tickets?limit=30`));
-  const secondPage = await body(await call(alice, `${path}/tickets?limit=30&page=2`));
+  const secondPage = await body(
+    await call(alice, `${path}/tickets?limit=30&page=2`),
+  );
   assert.equal(firstPage.total, 35);
   assert.equal(firstPage.limit, 30);
   assert.equal(secondPage.tickets.length, 5);
-  assert.equal(new Set([...firstPage.tickets, ...secondPage.tickets].map(t => t._id)).size, 35);
+  assert.equal(
+    new Set([...firstPage.tickets, ...secondPage.tickets].map((t) => t._id))
+      .size,
+    35,
+  );
   const mine = await body(await call(alice, `${path}/tickets?mine=true`));
   assert.equal(mine.total, 17);
-  assert.ok(mine.tickets.every(t => t.assignedTo._id === String(member._id)));
-  const unassignedMine = await body(await call(alice, `${path}/tickets?mine=true&bucket=unassigned`));
+  assert.ok(mine.tickets.every((t) => t.assignedTo._id === String(member._id)));
+  const unassignedMine = await body(
+    await call(alice, `${path}/tickets?mine=true&bucket=unassigned`),
+  );
   assert.equal(unassignedMine.total, 0);
   for (const channel of ["phone", "instagram", "messenger"]) {
-    const saved = await body(await call(alice, `${path}/resources/view`, "POST", {
-      name: `${channel} queue`, value: { channel },
-    }));
-    const result = await body(await call(alice, `${path}/tickets?view=${saved._id}`));
+    const saved = await body(
+      await call(alice, `${path}/resources/view`, "POST", {
+        name: `${channel} queue`,
+        value: { channel },
+      }),
+    );
+    const result = await body(
+      await call(alice, `${path}/tickets?view=${saved._id}`),
+    );
     assert.ok(result.total > 0);
-    assert.ok(result.tickets.every(t => t.channel === channel));
+    assert.ok(result.tickets.every((t) => t.channel === channel));
   }
   assert.equal((await call(alice, `${path}/tickets?page=0`)).status, 400);
-  assert.equal((await call(alice, `${path}/tickets?channel=unknown`)).status, 400);
+  assert.equal(
+    (await call(alice, `${path}/tickets?channel=unknown`)).status,
+    400,
+  );
 });
 test("merging refuses unrelated customers and moves only same-workspace conversations", async () => {
   const first = await createTicket(alice, a),
@@ -1580,7 +1637,7 @@ test("phone callbacks validate Twilio signatures and return routing instructions
     assert.equal((await send("bad")).status, 401);
     const result = await send(signature);
     assert.equal(result.status, 200);
-    assert.ok((await result.text()).includes("<Dial>+919000000002</Dial>"));
+    assert.match(await result.text(), /<Dial[^>]*>\+919000000002<\/Dial>/);
     assert.equal((await send(signature)).status, 200);
     assert.equal(
       await Ticket.countDocuments({ workspace: a._id, channel: "phone" }),
@@ -1817,4 +1874,737 @@ test("custom role edits apply immediately and assigned roles cannot be deleted",
       .status,
     200,
   );
+});
+
+test("bulk changes are atomic, version checked, role restricted and workspace bound", async () => {
+  const one = await createTicket(alice, a),
+    two = await createTicket(alice, a),
+    foreign = await createTicket(bob, b),
+    path = `/workspaces/${a._id}/tickets/bulk`;
+  const send = (tickets) =>
+    call(alice, path, "POST", { tickets, actions: { priority: "Critical" } });
+  assert.equal(
+    (
+      await send([
+        { id: one._id, version: one.version },
+        { id: two._id, version: two.version + 1 },
+      ])
+    ).status,
+    409,
+  );
+  assert.equal((await Ticket.findById(one._id)).priority, "Medium");
+  assert.equal(
+    (
+      await send([
+        { id: one._id, version: one.version },
+        { id: foreign._id, version: foreign.version },
+      ])
+    ).status,
+    404,
+  );
+  assert.equal((await Ticket.findById(one._id)).priority, "Medium");
+  assert.equal(
+    (
+      await body(
+        await send([
+          { id: one._id, version: one.version },
+          { id: two._id, version: two.version },
+        ]),
+      )
+    ).updated,
+    2,
+  );
+  await invite(alice, a, carol, "agent");
+  assert.equal(
+    (
+      await call(carol, path, "POST", {
+        tickets: [{ id: one._id, version: one.version }],
+        actions: { status: "Closed" },
+      })
+    ).status,
+    403,
+  );
+});
+test("formatted replies store sanitized HTML and canonical plain text", async () => {
+  const t = await createTicket(alice, a),
+    path = `/workspaces/${a._id}/tickets/${t._id}/messages`;
+  const result = await body(
+    await call(alice, path, "POST", {
+      text: "spoofed fallback",
+      html: "<p>Hello <b>customer</b></p><script>steal()</script><img src=x onerror=steal()>",
+    }),
+  );
+  assert.equal(result.text, "Hello customer");
+  assert.equal(result.html, "<p>Hello <b>customer</b></p>");
+  assert.equal(
+    (
+      await call(alice, path, "POST", {
+        text: "fallback",
+        html: "<script>empty()</script>",
+      })
+    ).status,
+    400,
+  );
+});
+test("mail OAuth refresh rotates encrypted credentials and sync state without exposing tokens", async () => {
+  process.env.GOOGLE_MAIL_CLIENT_ID = "fixture-client";
+  process.env.GOOGLE_MAIL_CLIENT_SECRET = "fixture-secret";
+  try {
+    const c = await Connector.create({
+      workspace: a._id,
+      kind: "email",
+      name: "OAuth mail",
+      config: {
+        imap: { host: "imap.gmail.com", user: alice.email },
+        oauth: {
+          provider: "google",
+          refreshToken: encrypt("old-refresh"),
+          expiresAt: 0,
+        },
+      },
+      cursor: { validity: "123", uid: 9 },
+      lastSyncAt: new Date(),
+    });
+    const access = await mailboxAccessToken(c, async (url, options) => {
+      assert.equal(String(url), "https://oauth2.googleapis.com/token");
+      assert.equal(options.body.get("refresh_token"), "old-refresh");
+      return new Response(
+        JSON.stringify({
+          access_token: "new-access",
+          refresh_token: "new-refresh",
+          expires_in: 3600,
+        }),
+        { status: 200 },
+      );
+    });
+    assert.equal(access, "new-access");
+    const stored = await Connector.findById(c._id);
+    assert.equal(decrypt(stored.config.oauth.refreshToken), "new-refresh");
+    assert.equal(stored.cursor.uid, 9);
+    const list = await body(
+      await call(alice, `/workspaces/${a._id}/connectors`),
+    );
+    assert.ok(!JSON.stringify(list).includes("refreshToken"));
+    assert.ok(!JSON.stringify(list).includes("accessToken"));
+  } finally {
+    delete process.env.GOOGLE_MAIL_CLIENT_ID;
+    delete process.env.GOOGLE_MAIL_CLIENT_SECRET;
+  }
+});
+test("voice grants bind destination to a ticket and reject callback reuse", async () => {
+  await upgrade(a);
+  const t = await createTicket(alice, a);
+  await Contact.updateOne(
+    { _id: t.contact },
+    { $set: { phone: "919000000003" } },
+  );
+  const c = await body(
+    await call(alice, `/workspaces/${a._id}/channels`, "POST", {
+      kind: "phone",
+      name: "Browser phone",
+      assetId: "AC" + "a".repeat(32),
+      token: "fixture-auth",
+      secret: "fixture-auth",
+      phoneNumber: "+919000000001",
+      forwardTo: "+919000000002",
+    }),
+  );
+  await body(
+    await call(alice, `/workspaces/${a._id}/connectors/${c.id}/voice`, "PUT", {
+      apiKeySid: "SK" + "b".repeat(32),
+      apiKeySecret: "fixture-key-secret",
+      appSid: "AP" + "c".repeat(32),
+      recordCalls: true,
+      recordingNotice: "This call is recorded for quality.",
+    }),
+  );
+  const grant = await body(
+    await call(
+      alice,
+      `/workspaces/${a._id}/tickets/${t._id}/voice-token`,
+      "POST",
+      {},
+    ),
+  );
+  assert.equal(jwt.decode(grant.token).grants.identity, grant.identity);
+  const previous = process.env.BACKEND_URL;
+  process.env.BACKEND_URL = base;
+  try {
+    const params = {
+        AccountSid: "AC" + "a".repeat(32),
+        CallSid: "CA" + "d".repeat(32),
+        From: "client:" + grant.identity,
+        To: "+19999999999",
+      },
+      url = base + "/voice-plus/" + c.id + "/dial";
+    const send = () =>
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Twilio-Signature": twilio.getExpectedTwilioSignature(
+            "fixture-auth",
+            url,
+            params,
+          ),
+        },
+        body: new URLSearchParams(params),
+      });
+    const response = await send();
+    assert.equal(response.status, 200);
+    const xml = await response.text();
+    assert.ok(xml.includes("+919000000003"));
+    assert.ok(!xml.includes("+19999999999"));
+    assert.equal((await send()).status, 403);
+    assert.equal(
+      (
+        await body(
+          await call(alice, `/workspaces/${a._id}/tickets/${t._id}/calls`),
+        )
+      ).length,
+      1,
+    );
+    assert.equal(
+      (await call(bob, `/workspaces/${a._id}/tickets/${t._id}/calls`)).status,
+      404,
+    );
+  } finally {
+    if (previous) process.env.BACKEND_URL = previous;
+    else delete process.env.BACKEND_URL;
+  }
+});
+test("SCIM provisions agents, rejects global-account linking, requeues deactivated staff and revokes keys", async () => {
+  await upgrade(a);
+  const key = await body(
+    await call(alice, `/workspaces/${a._id}/security/scim-token`, "POST", {}),
+  );
+  const scim = (path, method = "GET", value) =>
+    fetch(base + `/scim/${a._id}/v2` + path, {
+      method,
+      headers: {
+        Authorization: "Bearer " + key.token,
+        "Content-Type": "application/scim+json",
+      },
+      ...(value ? { body: JSON.stringify(value) } : {}),
+    });
+  const input = {
+    schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"],
+    externalId: "idp-person-1",
+    userName: "managed@example.com",
+    displayName: "Managed Agent",
+    active: true,
+  };
+  const created = await body(await scim("/Users", "POST", input)),
+    binding = await ProvisionUser.findById(created.id),
+    member = await Membership.findById(binding.member);
+  assert.equal(member.role, "agent");
+  assert.equal(
+    (
+      await body(
+        await scim(
+          "/Users?filter=" +
+            encodeURIComponent('userName eq "managed@example.com"'),
+        ),
+      )
+    ).totalResults,
+    1,
+  );
+  assert.equal(
+    (
+      await scim("/Users", "POST", {
+        ...input,
+        externalId: "unrelated",
+        userName: bob.email,
+      })
+    ).status,
+    409,
+  );
+  const t = await createTicket(alice, a);
+  await Ticket.updateOne({ _id: t._id }, { $set: { assignedTo: member._id } });
+  const updated = await body(
+    await scim("/Users/" + created.id, "PATCH", {
+      schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      Operations: [{ op: "Replace", path: "active", value: false }],
+    }),
+  );
+  assert.equal(updated.active, false);
+  assert.equal((await Ticket.findById(t._id)).assignedTo, undefined);
+  await body(
+    await call(alice, `/workspaces/${a._id}/security/scim-token`, "POST", {}),
+  );
+  assert.equal((await scim("/Users")).status, 401);
+});
+test("accounting issuance is immutable and credits cannot exceed reviewed invoices", async () => {
+  const row = await BillingOrder.create({
+      workspace: a._id,
+      orderId: "order_accounting",
+      paymentId: "pay_accounting",
+      receipt: "ACCT-FIXTURE",
+      invoiceNumber: "QF2627/987654",
+      plan: "Pro",
+      seats: 1,
+      net: 10000,
+      tax: 1800,
+      total: 11800,
+      cgst: 900,
+      sgst: 900,
+      igst: 0,
+      status: "paid",
+      paidAt: new Date(),
+      seller: { gstin: "20AAAAA0000A1Z5", sac: "998314" },
+      customer: { name: "Buyer" },
+    }),
+    path = `/workspaces/${a._id}/billing/accounting/${row._id}`;
+  assert.equal(
+    (
+      await call(alice, path + "/issue", "POST", {
+        accountingReviewed: true,
+        eInvoiceRequired: true,
+        treatmentNote: "Accounting fixture review",
+      })
+    ).status,
+    409,
+  );
+  const first = await body(
+    await call(alice, path + "/issue", "POST", {
+      accountingReviewed: true,
+      eInvoiceRequired: false,
+      treatmentNote: "Accounting reviewed e-invoice applicability",
+    }),
+  );
+  const replay = await body(
+    await call(alice, path + "/issue", "POST", {
+      accountingReviewed: true,
+      eInvoiceRequired: false,
+      treatmentNote: "Second review cannot overwrite",
+    }),
+  );
+  assert.equal(replay._id, first._id);
+  await body(
+    await call(alice, path + "/credit-note", "POST", {
+      amount: 5000,
+      reason: "Partial credit approved",
+      accountingReviewed: true,
+    }),
+  );
+  assert.equal(
+    (
+      await call(alice, path + "/credit-note", "POST", {
+        amount: 7000,
+        reason: "Exceeds remaining amount",
+        accountingReviewed: true,
+      })
+    ).status,
+    409,
+  );
+  assert.equal((await call(bob, path + "/export")).status, 404);
+  assert.equal((await AccountingDocument.find({ invoice: row._id })).length, 2);
+});
+test("recurring captured payments bind invoice, amount and period without replay extension", async () => {
+  process.env.RAZORPAY_PRO_PLAN_ID = "plan_fixture";
+  try {
+    const row = await RecurringPlan.create({
+        workspace: a._id,
+        requestKey: "recurring-fixture",
+        subscriptionId: "sub_fixture",
+        plan: "Pro",
+        seats: 2,
+        total: 11800,
+        amount: {
+          net: 10000,
+          tax: 1800,
+          total: 11800,
+          cgst: 900,
+          sgst: 900,
+          igst: 0,
+        },
+        taxRate: 1800,
+        status: "created",
+        seller: {
+          name: "Fixture Seller",
+          gstin: "20AAAAA0000A1Z5",
+          stateCode: "20",
+        },
+        customer: { name: "Buyer", stateCode: "20" },
+      }),
+      end = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const event = {
+      event: "subscription.charged",
+      payload: {
+        subscription: { entity: { id: row.subscriptionId } },
+        payment: { entity: { id: "pay_recurring" } },
+      },
+    };
+    let wrong = false;
+    const provider = async (path) =>
+      path.startsWith("subscriptions/")
+        ? {
+            id: "sub_fixture",
+            quantity: 2,
+            plan_id: "plan_fixture",
+            status: "active",
+            current_end: end,
+          }
+        : path.startsWith("payments/")
+          ? {
+              id: "pay_recurring",
+              order_id: "order_recurring",
+              invoice_id: "inv_fixture",
+              status: "captured",
+              amount: 11800,
+              currency: "INR",
+            }
+          : {
+              subscription_id: wrong ? "sub_other" : "sub_fixture",
+              payment_id: "pay_recurring",
+              status: "paid",
+              amount_paid: 11800,
+              currency: "INR",
+              billing_end: end,
+              billing_start: end - 30 * 86400,
+            };
+    wrong = true;
+    await assert.rejects(
+      () => recurringEvent(event, provider),
+      /does not match/,
+    );
+    wrong = false;
+    await recurringEvent(event, provider);
+    await recurringEvent(event, provider);
+    const current = await Workspace.findById(a._id);
+    assert.equal(current.billing.subscriptionId, "razorpay:sub_fixture");
+    assert.equal(current.billing.expiresAt.getTime(), end * 1000);
+    assert.equal(await BillingOrder.countDocuments({ workspace: a._id }), 1);
+  } finally {
+    delete process.env.RAZORPAY_PRO_PLAN_ID;
+  }
+});
+test("AI evaluation jobs score expected handoff/evidence and do not repeat completed runs", async () => {
+  await upgrade(a);
+  const row = await body(
+    await call(alice, `/workspaces/${a._id}/ai/benchmarks`, "POST", {
+      name: "Support acceptance",
+      cases: [
+        { question: "Please reset my password", handoff: true },
+        {
+          question: "How to store my bracelet?",
+          handoff: false,
+          requiredPhrases: ["dry place"],
+          sourceIds: ["a".repeat(24)],
+        },
+      ],
+    }),
+  );
+  let count = 0;
+  await runBenchmark(row._id, async (w, question) => {
+    count++;
+    return question.includes("password")
+      ? { handoff: true, sources: [] }
+      : {
+          handoff: false,
+          answer: "Keep it in a dry place.",
+          sources: [{ id: "a".repeat(24) }],
+        };
+  });
+  await runBenchmark(row._id, async () => {
+    throw new Error("Should not repeat");
+  });
+  assert.equal(count, 2);
+  assert.equal((await AIBenchmark.findById(row._id)).passRate, 1);
+});
+
+test("email delivery includes only scanned public files from the same ticket", async () => {
+  const t = await createTicket(alice, a),
+    foreign = await createTicket(bob, b);
+  const file = await Attachment.create({
+    workspace: a._id,
+    ticket: t._id,
+    name: "receipt.pdf",
+    mime: "application/pdf",
+    size: 12,
+    internal: false,
+    storageKey: "fixture-receipt",
+    sha256: "a".repeat(64),
+    uploadedBy: alice._id,
+  });
+  const hidden = await Attachment.create({
+    workspace: a._id,
+    ticket: t._id,
+    name: "private.pdf",
+    mime: "application/pdf",
+    size: 12,
+    internal: true,
+    storageKey: "fixture-private",
+    sha256: "b".repeat(64),
+    uploadedBy: alice._id,
+  });
+  const c = await Connector.create({
+    workspace: a._id,
+    kind: "email",
+    name: "Email replies",
+    config: { fromAddress: "support@example.com" },
+  });
+  await Ticket.updateOne(
+    { _id: t._id },
+    { $set: { connection: c._id, channel: "email" } },
+  );
+  const path = `/workspaces/${a._id}/tickets/${t._id}/messages`;
+  assert.equal(
+    (
+      await call(alice, path, "POST", {
+        text: "Cannot share private file",
+        attachments: [String(hidden._id)],
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(
+        bob,
+        `/workspaces/${b._id}/tickets/${foreign._id}/messages`,
+        "POST",
+        {
+          text: "Cannot share another workspace file",
+          attachments: [String(file._id)],
+        },
+      )
+    ).status,
+    403,
+  );
+  const message = await body(
+    await call(alice, path, "POST", {
+      text: "Your receipt",
+      html: "<p>Your <strong>receipt</strong></p>",
+      attachments: [String(file._id)],
+    }),
+  );
+  const job = await Job.findOne({ key: "reply:" + message._id });
+  let sent;
+  const { deliver } = await import("../../src/helpdesk/jobs.js");
+  await deliver(job, {
+    mailer: {
+      sendMail: async (value) => {
+        sent = value;
+      },
+    },
+  });
+  assert.equal(sent.attachments.length, 1);
+  assert.equal(sent.attachments[0].filename, "receipt.pdf");
+  assert.ok(sent.html.includes("<strong>receipt</strong>"));
+});
+
+test("SAML validates signed assertions and responses and rejects tampering and replay using shared Mongo cache", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises"),
+    { tmpdir } = await import("node:os"),
+    path = await import("node:path"),
+    { execFile } = await import("node:child_process"),
+    { promisify } = await import("node:util"),
+    { inflateRawSync } = await import("node:zlib"),
+    { SignedXml } = await import("xml-crypto"),
+    { samlClient } = await import("../../src/helpdesk/saml.js");
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "quickfix-saml-fixture-"),
+  );
+  const names = [
+      "SAML_ENTRY_POINT",
+      "SAML_IDP_ISSUER",
+      "SAML_IDP_CERT",
+      "SAML_SP_KEY",
+      "SAML_SP_CERT",
+      "BACKEND_URL",
+    ],
+    previous = Object.fromEntries(names.map((k) => [k, process.env[k]]));
+  try {
+    await promisify(execFile)("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      path.join(directory, "key.pem"),
+      "-out",
+      path.join(directory, "cert.pem"),
+      "-subj",
+      "/CN=fixture.invalid",
+      "-days",
+      "1",
+    ]);
+    const key = await readFile(path.join(directory, "key.pem"), "utf8"),
+      cert = await readFile(path.join(directory, "cert.pem"), "utf8");
+    Object.assign(process.env, {
+      SAML_ENTRY_POINT: "https://idp.example.com/saml",
+      SAML_IDP_ISSUER: "https://idp.example.com",
+      SAML_IDP_CERT: cert,
+      SAML_SP_KEY: key,
+      SAML_SP_CERT: cert,
+      BACKEND_URL: "https://support.example.com",
+    });
+    const client = samlClient(a),
+      url = new URL(await client.getAuthorizeUrlAsync("fixture-relay", {})),
+      request = inflateRawSync(
+        Buffer.from(url.searchParams.get("SAMLRequest"), "base64"),
+      ).toString(),
+      requestID = /\bID="([^"]+)"/.exec(request)[1];
+    const now = new Date().toISOString(),
+      before = new Date(Date.now() - 60000).toISOString(),
+      after = new Date(Date.now() + 300000).toISOString(),
+      recipient = `https://support.example.com/api/sso/saml/${a.slug}/acs`,
+      audience = `https://support.example.com/api/sso/saml/${a.slug}/metadata`;
+    let xml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response_fixture" Version="2.0" IssueInstant="${now}" Destination="${recipient}" InResponseTo="${requestID}"><saml:Issuer>https://idp.example.com</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion ID="_assertion_fixture" Version="2.0" IssueInstant="${now}"><saml:Issuer>https://idp.example.com</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">fixture-subject</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData InResponseTo="${requestID}" Recipient="${recipient}" NotOnOrAfter="${after}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="${before}" NotOnOrAfter="${after}"><saml:AudienceRestriction><saml:Audience>${audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="${now}" SessionIndex="fixture-session"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement></saml:Assertion></samlp:Response>`;
+    const sign = (value, element) => {
+      const signature = new SignedXml({
+        privateKey: key,
+        publicCert: cert,
+        canonicalizationAlgorithm: "http://www.w3.org/2001/10/xml-exc-c14n#",
+        signatureAlgorithm: "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+      });
+      signature.addReference({
+        xpath: `//*[local-name(.)='${element}']`,
+        digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
+        transforms: [
+          "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
+          "http://www.w3.org/2001/10/xml-exc-c14n#",
+        ],
+      });
+      signature.computeSignature(value, {
+        location: {
+          reference: `//*[local-name(.)='${element}']/*[local-name(.)='Issuer']`,
+          action: "after",
+        },
+      });
+      return signature.getSignedXml();
+    };
+    xml = sign(sign(xml, "Assertion"), "Response");
+    await assert.rejects(() =>
+      client.validatePostResponseAsync({
+        SAMLResponse: Buffer.from(
+          xml.replace("fixture-subject", "tampered-subject"),
+        ).toString("base64"),
+      }),
+    );
+    // A failed signature must not consume the legitimate request ID.
+    const validated = await client.validatePostResponseAsync({
+      SAMLResponse: Buffer.from(xml).toString("base64"),
+    });
+    assert.equal(validated.profile.nameID, "fixture-subject");
+    await assert.rejects(() =>
+      samlClient(a).validatePostResponseAsync({
+        SAMLResponse: Buffer.from(xml).toString("base64"),
+      }),
+    );
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("cumulative Razorpay refunds revoke only the currently paid recurring entitlement", async () => {
+  const saved = [
+      "RAZORPAY_KEY_ID",
+      "RAZORPAY_KEY_SECRET",
+      "RAZORPAY_WEBHOOK_SECRET",
+    ].map((k) => [k, process.env[k]]),
+    original = globalThis.fetch;
+  Object.assign(process.env, {
+    RAZORPAY_KEY_ID: "fixture-key",
+    RAZORPAY_KEY_SECRET: "fixture-secret",
+    RAZORPAY_WEBHOOK_SECRET: "fixture-webhook",
+  });
+  try {
+    await BillingOrder.create({
+      workspace: a._id,
+      recurringId: "sub_refundfixture",
+      orderId: "order_refundfixture",
+      paymentId: "pay_refundfixture",
+      receipt: "REFUND-FIXTURE",
+      plan: "Pro",
+      seats: 2,
+      total: 11800,
+      status: "paid",
+      applied: true,
+    });
+    await Workspace.updateOne(
+      { _id: a._id },
+      {
+        $set: {
+          billing: {
+            plan: "Pro",
+            seats: 2,
+            status: "active",
+            subscriptionId: "razorpay:sub_refundfixture",
+            paymentId: "pay_refundfixture",
+            expiresAt: new Date(Date.now() + 86400000),
+          },
+        },
+      },
+    );
+    globalThis.fetch = async (url, options) =>
+      String(url).startsWith("https://api.razorpay.com/")
+        ? new Response(
+            JSON.stringify({
+              id: "pay_refundfixture",
+              amount: 11800,
+              currency: "INR",
+              amount_refunded: 11800,
+              status: "refunded",
+            }),
+            { status: 200 },
+          )
+        : original(url, options);
+    const raw = JSON.stringify({
+        event: "refund.processed",
+        payload: {
+          refund: { entity: { payment_id: "pay_refundfixture", amount: 6000 } },
+        },
+      }),
+      signature = crypto
+        .createHmac("sha256", "fixture-webhook")
+        .update(raw)
+        .digest("hex");
+    const response = await original(base + "/razorpay", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Razorpay-Signature": signature,
+      },
+      body: raw,
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await Workspace.findById(a._id)).billing.plan, "Free");
+    await Workspace.updateOne(
+      { _id: a._id },
+      {
+        $set: {
+          billing: {
+            plan: "Premium",
+            seats: 4,
+            status: "active",
+            subscriptionId: "razorpay:sub_new",
+            paymentId: "pay_new",
+            expiresAt: new Date(Date.now() + 86400000),
+          },
+        },
+      },
+    );
+    await original(base + "/razorpay", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Razorpay-Signature": signature,
+      },
+      body: raw,
+    });
+    assert.equal((await Workspace.findById(a._id)).billing.plan, "Premium");
+  } finally {
+    globalThis.fetch = original;
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 });

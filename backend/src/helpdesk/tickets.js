@@ -1,5 +1,6 @@
 import { seatAllowed } from "./entitlements.js";
 import crypto from "node:crypto";
+import { cleanHTML, plainHTML } from "./richText.js";
 import {
   Ticket,
   Message,
@@ -8,6 +9,7 @@ import {
   Resource,
   Connector,
   Job,
+  Attachment,
 } from "./models.js";
 import { audit, canWork, objectId, ticketAccess } from "./access.js";
 import { fail, validateFields } from "./validation.js";
@@ -243,6 +245,23 @@ export async function addMessage(
   if (ticket.mergedInto) throw fail("Ticket has been merged", 409);
   if (input.internal && role === "customer")
     throw fail("Customers cannot add private notes", 403);
+  if (input.html && !plainHTML(input.html))
+    throw fail("Formatted reply must contain visible text");
+  if (input.attachments?.length) {
+    const files = await Attachment.find({
+      _id: { $in: input.attachments },
+      workspace: workspace._id,
+      ticket: ticket._id,
+      ...(!input.internal ? { internal: false } : {}),
+    }).session(session || null);
+    if (files.length !== input.attachments.length)
+      throw fail(
+        "Attachments must belong to this ticket and match message visibility",
+        403,
+      );
+    if (files.reduce((sum, file) => sum + file.size, 0) > 20 * 1024 ** 2)
+      throw fail("Message attachments exceed the 20 MB total limit");
+  }
   const [message] = await Message.create(
     [
       {
@@ -250,7 +269,8 @@ export async function addMessage(
         ticket: ticket._id,
         author: String(actor),
         authorRole: role,
-        text: input.text,
+        text: input.html ? plainHTML(input.html) : input.text,
+        html: input.html ? cleanHTML(input.html) : undefined,
         internal: input.internal || false,
         connection,
         externalId,

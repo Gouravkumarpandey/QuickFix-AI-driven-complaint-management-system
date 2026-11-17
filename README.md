@@ -1,3 +1,5 @@
+> Advanced ticket, email, calling, identity, recurring-billing, AI evaluation and operations setup: [docs/ADVANCED_HELPDESK.md](docs/ADVANCED_HELPDESK.md). See its implementation boundaries before enabling providers.
+
 > Enterprise extension and operations dashboard: see [implementation, provider setup and verification scope](docs/ENTERPRISE_HELPDESK.md).
 
 > New workspace helpdesk: see [features, setup and remaining scope](docs/WORKSPACE_HELPDESK.md). Open `/workspaces` after signing in.
