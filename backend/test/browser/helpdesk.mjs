@@ -503,7 +503,7 @@ async function main() {
     })
     .waitFor();
 
-  const { Attachment, Message } = await import("../../src/helpdesk/models.js");
+  const { Attachment } = await import("../../src/helpdesk/models.js");
   const fixture = Buffer.from("%PDF-1.4 Public customer document");
   await writeFile(path.join(uploads, "public-document"), fixture);
   const shared = await Attachment.create({
