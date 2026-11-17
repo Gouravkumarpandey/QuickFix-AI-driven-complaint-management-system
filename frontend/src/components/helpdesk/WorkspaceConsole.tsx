@@ -694,6 +694,8 @@ function InboxView({
     [channel, setChannel] = useState(""),
     [mine, setMine] = useState(member.role === "agent"),
     [page, setPage] = useState(1),
+    [loadedPage, setLoadedPage] = useState(1),
+    [listLoading, setListLoading] = useState(false),
     [total, setTotal] = useState(0),
     [bucket, setBucket] = useState(initialQueue),
     [reply, setReply] = useState(""),
@@ -733,29 +735,35 @@ function InboxView({
   const pageSize = 30;
   const load = useCallback(async () => {
     const request = ++listRequest.current;
-    const { data } = await api.get<{ tickets: Ticket[]; total: number }>(
-      base + "/tickets",
-      {
-        params: {
-          page,
-          limit: pageSize,
-          ...(mine ? { mine: true } : {}),
-          ...(channel ? { channel } : {}),
-          ...(search ? { search } : {}),
-          ...(status ? { status } : {}),
-          ...(bucket ? { bucket } : {}),
-          ...(view ? { view } : {}),
+    setListLoading(true);
+    try {
+      const { data } = await api.get<{ tickets: Ticket[]; total: number }>(
+        base + "/tickets",
+        {
+          params: {
+            page,
+            limit: pageSize,
+            ...(mine ? { mine: true } : {}),
+            ...(channel ? { channel } : {}),
+            ...(search ? { search } : {}),
+            ...(status ? { status } : {}),
+            ...(bucket ? { bucket } : {}),
+            ...(view ? { view } : {}),
+          },
         },
-      },
-    );
-    if (request !== listRequest.current) return;
-    const lastPage = Math.max(1, Math.ceil(data.total / pageSize));
-    if (page > lastPage) {
-      setPage(lastPage);
-      return;
+      );
+      if (request !== listRequest.current) return;
+      const lastPage = Math.max(1, Math.ceil(data.total / pageSize));
+      if (page > lastPage) {
+        setPage(lastPage);
+        return;
+      }
+      setTickets(data.tickets);
+      setTotal(data.total);
+      setLoadedPage(page);
+    } finally {
+      if (request === listRequest.current) setListLoading(false);
     }
-    setTickets(data.tickets);
-    setTotal(data.total);
   }, [base, search, status, view, bucket, channel, mine, page]);
   useEffect(() => {
     void run(load);
@@ -981,6 +989,7 @@ function InboxView({
               {tickets.map((item) => (
                 <button
                   key={item._id}
+                  disabled={listLoading}
                   onClick={() => setSelected(item._id)}
                   className={`block w-full text-left p-4 hover:bg-blue-50 ${selected === item._id ? "bg-blue-50 border-l-4 border-blue-500" : ""}`}
                 >
@@ -1011,21 +1020,23 @@ function InboxView({
             </div>
             <div className="border-t p-3 flex items-center justify-between gap-2 text-xs">
               <span role="status">
-                {total
-                  ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`
-                  : "0 tickets"}
+                {listLoading
+                  ? "Loading tickets…"
+                  : total
+                    ? `${(loadedPage - 1) * pageSize + 1}–${Math.min(loadedPage * pageSize, total)} of ${total}`
+                    : "0 tickets"}
               </span>
               <div className="flex gap-2">
                 <button
                   className={secondary}
-                  disabled={busy || page <= 1}
+                  disabled={busy || listLoading || page <= 1}
                   onClick={() => setPage(page - 1)}
                 >
                   Previous
                 </button>
                 <button
                   className={secondary}
-                  disabled={busy || page * pageSize >= total}
+                  disabled={busy || listLoading || page * pageSize >= total}
                   onClick={() => setPage(page + 1)}
                 >
                   Next
