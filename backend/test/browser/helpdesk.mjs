@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
-import { writeFile, readFile } from "node:fs/promises";
+import { writeFile, readFile, mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
@@ -7,6 +9,10 @@ const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 let reviewPage;
 async function main() {
+  const uploads = await mkdtemp(
+    path.join(os.tmpdir(), "quickfix-audit-uploads-"),
+  );
+  process.env.PRIVATE_UPLOAD_DIR = uploads;
   const mongo = await MongoMemoryReplSet.create({
     binary: { version: "7.0.14" },
     replSet: {
@@ -174,6 +180,10 @@ async function main() {
   reviewPage = page;
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("response", (r) => {
+    if (r.url().startsWith("http://localhost:5105/api/") && r.status() >= 500)
+      errors.push(`Unexpected API ${r.status()}: ${new URL(r.url()).pathname}`);
+  });
   const access = jwt.sign(
     { id: String(user._id), tokenType: "access", issuedAt: Date.now() + 1 },
     process.env.JWT_SECRET,
@@ -336,10 +346,48 @@ async function main() {
   await page
     .getByRole("heading", { name: "Company knowledge", exact: true })
     .waitFor();
+  await page
+    .getByLabel("Title", { exact: true })
+    .fill("Email support verification guide");
+  await page
+    .getByLabel("Article content", { exact: true })
+    .fill(
+      "Use the six-digit OTP emailed to you to verify your support conversation.",
+    );
+  await page
+    .getByRole("checkbox", { name: "Publish to the customer help centre" })
+    .check();
+  const articleSaved = page.waitForResponse(
+    (r) => r.url().endsWith("/articles") && r.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Save article", exact: true }).click();
+  if ((await articleSaved).status() !== 201)
+    throw new Error("Knowledge article creation failed");
+  await page
+    .getByRole("button", {
+      name: "Email support verification guide",
+      exact: false,
+    })
+    .waitFor();
   await page.screenshot({
     path: "/tmp/quickfix-helpdesk-knowledge.png",
     fullPage: true,
   });
+  for (const [tab, heading] of [
+    ["Customers", "Customer directory"],
+    ["Tools", "Agent productivity"],
+    ["Team", "Invite your support team"],
+    ["Connections", "Connected channels"],
+    ["Billing", "Workspace billing"],
+    ["Reports", "Support performance"],
+    ["Channels", "Support channels"],
+    ["AI studio", "AI studio"],
+    ["Migration", "Import existing complaints"],
+    ["Readiness", "Deployment readiness"],
+  ]) {
+    await page.getByRole("button", { name: tab, exact: true }).click();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+  }
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page
     .getByRole("heading", { name: "Service hours and SLAs", exact: true })
@@ -392,8 +440,10 @@ async function main() {
   const guest = await browser.newPage({
     viewport: { width: 1000, height: 900 },
   });
+  guest.on("pageerror", (error) => errors.push(error.message));
   reviewPage = guest;
   await guest.goto("http://localhost:5175/support/vaidiktalk-demo");
+  await guest.getByRole("button", { name: /Reject all/i }).click();
   await guest
     .getByRole("button", { name: "How to track your order", exact: false })
     .waitFor();
@@ -452,6 +502,36 @@ async function main() {
       exact: false,
     })
     .waitFor();
+
+  const { Attachment, Message } = await import("../../src/helpdesk/models.js");
+  const fixture = Buffer.from("%PDF-1.4 Public customer document");
+  await writeFile(path.join(uploads, "public-document"), fixture);
+  const shared = await Attachment.create({
+    workspace: workspace._id,
+    ticket: pending.id,
+    name: "support-guide.pdf",
+    mime: "application/pdf",
+    size: fixture.length,
+    storageKey: "public-document",
+    internal: false,
+    uploadedBy: user._id,
+  });
+  await Message.create({
+    workspace: workspace._id,
+    ticket: pending.id,
+    author: String(user._id),
+    authorRole: "agent",
+    text: "Your requested support guide.",
+    internal: false,
+    attachments: [shared._id],
+  });
+  const fileDownload = guest.waitForEvent("download");
+  await guest
+    .getByRole("button", { name: "Download support-guide.pdf", exact: true })
+    .click();
+  const downloaded = await fileDownload;
+  if (!(await readFile(await downloaded.path())).equals(fixture))
+    throw new Error("Shared customer attachment did not download correctly");
   await guest.screenshot({
     path: "/tmp/quickfix-email-otp-verified.png",
     fullPage: true,
@@ -520,6 +600,7 @@ async function main() {
   await vite.close();
   await mongoose.disconnect();
   await mongo.stop();
+  await rm(uploads, { recursive: true, force: true });
   if (errors.length) throw new Error(errors.join("\n"));
 }
 main()

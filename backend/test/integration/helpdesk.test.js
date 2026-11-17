@@ -3284,7 +3284,7 @@ test("verified portal requests bind to email connections and incoming email repl
   await importRawMail(
     connector,
     Buffer.from(
-      `From: Email Buyer <mailbox-buyer@example.com>\r\nTo: support@example.com\r\nSubject: ${mail.subject}\r\nMessage-ID: <customer-email-reply@example.com>\r\n\r\nThank you for checking.`,
+      `From: Email Buyer <mailbox-buyer@example.com>\r\nTo: support@example.com\r\nSubject: Changed subject from the customer\r\nIn-Reply-To: ${mail.messageId}\r\nReferences: ${mail.messageId}\r\nMessage-ID: <customer-email-reply@example.com>\r\n\r\nThank you for checking.`,
     ),
   );
   assert.equal(await Ticket.countDocuments({ workspace: a._id }), 1);
@@ -3295,4 +3295,134 @@ test("verified portal requests bind to email connections and incoming email repl
       text: "Thank you for checking.",
     }),
   );
+});
+test("verified portal downloads include only attachments actually shared in public messages", async () => {
+  const pending = await body(
+    await call(null, "/help/alpha/tickets", "POST", {
+      name: "Files Customer",
+      email: "files@example.com",
+      subject: "Shared documents",
+      description: "Please send my support document",
+    }),
+  );
+  const access = await verifyGuest(pending),
+    fs = await import("node:fs/promises"),
+    os = await import("node:os"),
+    path = await import("node:path");
+  const dir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "quickfix-portal-files-"),
+    ),
+    previous = process.env.PRIVATE_UPLOAD_DIR;
+  process.env.PRIVATE_UPLOAD_DIR = dir;
+  try {
+    const content = Buffer.from("%PDF-1.4 verified support document");
+    await fs.writeFile(path.join(dir, "shared-file"), content);
+    const shared = await Attachment.create({
+      workspace: a._id,
+      ticket: pending.id,
+      name: "support.pdf",
+      mime: "application/pdf",
+      size: content.length,
+      storageKey: "shared-file",
+      internal: false,
+      uploadedBy: alice._id,
+    });
+    const staging = await Attachment.create({
+      workspace: a._id,
+      ticket: pending.id,
+      name: "draft.pdf",
+      mime: "application/pdf",
+      size: 10,
+      storageKey: "not-read",
+      internal: false,
+      uploadedBy: alice._id,
+    });
+    const internal = await Attachment.create({
+      workspace: a._id,
+      ticket: pending.id,
+      name: "private.pdf",
+      mime: "application/pdf",
+      size: 10,
+      storageKey: "not-read",
+      internal: true,
+      uploadedBy: alice._id,
+    });
+    await body(
+      await call(
+        alice,
+        `/workspaces/${a._id}/tickets/${pending.id}/messages`,
+        "POST",
+        {
+          text: "Your support document is attached.",
+          attachments: [String(shared._id)],
+        },
+      ),
+    );
+    await body(
+      await call(
+        alice,
+        `/workspaces/${a._id}/tickets/${pending.id}/messages`,
+        "POST",
+        {
+          text: "Private investigation",
+          internal: true,
+          attachments: [String(internal._id)],
+        },
+      ),
+    );
+    const headers = { "X-Ticket-Token": access.accessToken },
+      basePath = `/help/alpha/tickets/${pending.id}`;
+    const detail = await body(
+      await call(null, basePath, "GET", undefined, headers),
+    );
+    assert.deepEqual(
+      detail.attachments.map((f) => f._id),
+      [String(shared._id)],
+    );
+    assert.ok(!JSON.stringify(detail).includes("storageKey"));
+    const response = await call(
+      null,
+      basePath + "/attachments/" + shared._id,
+      "GET",
+      undefined,
+      headers,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(await response.text(), content.toString());
+    for (const file of [staging, internal])
+      assert.equal(
+        (
+          await call(
+            null,
+            basePath + "/attachments/" + file._id,
+            "GET",
+            undefined,
+            headers,
+          )
+        ).status,
+        404,
+      );
+    assert.equal(
+      (await call(null, basePath + "/attachments/" + shared._id)).status,
+      404,
+    );
+    assert.equal(
+      (
+        await call(
+          null,
+          `/help/bravo/tickets/${pending.id}/attachments/${shared._id}`,
+          "GET",
+          undefined,
+          headers,
+        )
+      ).status,
+      404,
+    );
+  } finally {
+    if (previous) process.env.PRIVATE_UPLOAD_DIR = previous;
+    else delete process.env.PRIVATE_UPLOAD_DIR;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

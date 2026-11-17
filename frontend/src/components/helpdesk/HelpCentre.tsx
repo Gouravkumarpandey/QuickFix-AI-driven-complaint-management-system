@@ -49,6 +49,9 @@ export function HelpCentre() {
     [messages, setMessages] = useState<
       { _id: string; text: string; authorRole: string }[]
     >([]),
+    [attachments, setAttachments] = useState<
+      { _id: string; name: string; size: number }[]
+    >([]),
     [reply, setReply] = useState(""),
     [status, setStatus] = useState(""),
     [error, setError] = useState(""),
@@ -72,6 +75,7 @@ export function HelpCentre() {
     setPending(null);
     setOTP("");
     setMessages([]);
+    setAttachments([]);
     setError("");
     api
       .get<{ name: string; fields: Field[]; aiAutomation?: boolean }>(base)
@@ -112,11 +116,13 @@ export function HelpCentre() {
         const { data } = await api.get<{
           ticket: { status: string };
           messages: typeof messages;
+          attachments: typeof attachments;
         }>(`${base}/tickets/${access.id}`, {
           headers: { "X-Ticket-Token": access.accessToken },
         });
         if (active) {
           setMessages(data.messages);
+          setAttachments(data.attachments || []);
           setStatus(data.ticket.status);
         }
       } catch {
@@ -413,6 +419,42 @@ export function HelpCentre() {
                       </div>
                     ))}
                   </div>
+                  {!!attachments.length && (
+                    <div className="border-t py-3 space-y-2">
+                      <h3 className="text-sm font-semibold">
+                        Shared attachments
+                      </h3>
+                      {attachments.map((file) => (
+                        <button
+                          key={file._id}
+                          type="button"
+                          className="block text-sm text-blue-700 underline"
+                          disabled={busy}
+                          onClick={() =>
+                            void run(async () => {
+                              const { data } = await api.get(
+                                `${base}/tickets/${access.id}/attachments/${file._id}`,
+                                {
+                                  headers: {
+                                    "X-Ticket-Token": access.accessToken,
+                                  },
+                                  responseType: "blob",
+                                },
+                              );
+                              const url = URL.createObjectURL(data),
+                                a = document.createElement("a");
+                              a.href = url;
+                              a.download = file.name;
+                              a.click();
+                              setTimeout(() => URL.revokeObjectURL(url), 1000);
+                            })
+                          }
+                        >
+                          Download {file.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <form
                     onSubmit={(event) => {
                       event.preventDefault();
@@ -449,6 +491,7 @@ export function HelpCentre() {
                     onClick={() => {
                       setAccess(null);
                       setMessages([]);
+                      setAttachments([]);
                       sessionStorage.removeItem("quickfix-portal:" + slug);
                     }}
                   >

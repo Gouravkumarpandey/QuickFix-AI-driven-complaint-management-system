@@ -289,6 +289,7 @@ export async function deliver(
       mailer = transport.mailer;
       from = transport.user;
     }
+    const outboundId = `<quickfix-${message._id}@${(from || "support@quickfix.local").split("@")[1]}>`;
     await mailer.sendMail({
       from,
       to: contact.email,
@@ -311,11 +312,13 @@ export async function deliver(
           file.storageKey,
         ),
       })),
-      messageId: `<quickfix-${message._id}@${(from || "support@quickfix.local").split("@")[1]}>`,
+      messageId: outboundId,
       headers: {
         "X-QuickFix-Thread": ticket.externalThread || String(ticket._id),
       },
     });
+    message.connection = connector._id;
+    message.externalId = outboundId;
   } else if (connector.kind === "whatsapp") {
     const phone = contact.phone;
     if (!/^\d{8,15}$/.test(phone || ""))

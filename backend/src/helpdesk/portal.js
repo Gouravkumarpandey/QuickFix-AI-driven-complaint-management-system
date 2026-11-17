@@ -1,3 +1,4 @@
+import path from "node:path";
 import { entitlement } from "./entitlements.js";
 import express from "express";
 import Joi from "joi";
@@ -13,6 +14,7 @@ import {
   Contact,
   CustomerEmailOTP,
   Connector,
+  Attachment,
 } from "./models.js";
 import { fail, validate, text, oid } from "./validation.js";
 import { inWorkspace } from "./access.js";
@@ -286,6 +288,41 @@ router.post(
     res.json({ id: ticket._id, number: ticket.number, accessToken: rawToken });
   }),
 );
+
+router.get(
+  "/:slug/tickets/:ticketId/attachments/:attachmentId",
+  wrap(async (req, res) => {
+    const ticket = await guest(req),
+      id = validate(oid.required(), req.params.attachmentId);
+    // Public staging uploads are not shared until attached to a public message.
+    const shared = await Message.exists({
+      workspace: req.workspace._id,
+      ticket: ticket._id,
+      internal: false,
+      attachments: id,
+    });
+    const file =
+      shared &&
+      (await Attachment.findOne({
+        _id: id,
+        workspace: req.workspace._id,
+        ticket: ticket._id,
+        internal: false,
+      }).select("+storageKey"));
+    if (!file) throw fail("Attachment not found", 404);
+    res
+      .set("Cache-Control", "private, no-store")
+      .set("X-Content-Type-Options", "nosniff")
+      .type(file.mime)
+      .attachment(file.name)
+      .sendFile(
+        path.join(
+          path.resolve(process.env.PRIVATE_UPLOAD_DIR || "./private-uploads"),
+          file.storageKey,
+        ),
+      );
+  }),
+);
 router.get(
   "/:slug/tickets/:ticketId",
   wrap(async (req, res) => {
@@ -298,6 +335,14 @@ router.get(
       .sort({ createdAt: 1 })
       .limit(500)
       .lean();
+    const attachments = await Attachment.find({
+      workspace: req.workspace._id,
+      ticket: ticket._id,
+      internal: false,
+      _id: { $in: messages.flatMap((m) => m.attachments || []) },
+    })
+      .select("_id name mime size")
+      .lean();
     res.json({
       ticket: {
         _id: ticket._id,
@@ -306,6 +351,7 @@ router.get(
         status: ticket.status,
       },
       messages,
+      attachments,
     });
   }),
 );
