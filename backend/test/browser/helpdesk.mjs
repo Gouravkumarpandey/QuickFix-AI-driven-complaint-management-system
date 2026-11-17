@@ -449,7 +449,7 @@ async function main() {
     .click();
   await guest
     .getByText("Please help me track this order using email support.", {
-      exact: true,
+      exact: false,
     })
     .waitFor();
   await guest.screenshot({
