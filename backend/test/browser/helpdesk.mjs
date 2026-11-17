@@ -392,6 +392,7 @@ async function main() {
   const guest = await browser.newPage({
     viewport: { width: 1000, height: 900 },
   });
+  reviewPage = guest;
   await guest.goto("http://localhost:5175/support/vaidiktalk-demo");
   await guest
     .getByRole("button", { name: "How to track your order", exact: false })
@@ -407,7 +408,7 @@ async function main() {
   await guest.getByLabel("Your name", { exact: true }).fill("Email Customer");
   await guest
     .getByLabel("Email", { exact: true })
-    .fill("email-customer@fixture.invalid");
+    .fill("email-customer@example.com");
   await guest
     .getByLabel("Subject", { exact: true })
     .fill("Email OTP verification test");
@@ -422,7 +423,10 @@ async function main() {
   await guest
     .getByRole("button", { name: "Submit support request", exact: true })
     .click();
-  const pending = await (await pendingResponse).json();
+  const pendingResult = await pendingResponse;
+  const pending = await pendingResult.json();
+  if (pendingResult.status() !== 201)
+    throw new Error("Portal request failed: " + JSON.stringify(pending));
   if (pending.accessToken)
     throw new Error("Unverified portal response leaked access");
   await guest
