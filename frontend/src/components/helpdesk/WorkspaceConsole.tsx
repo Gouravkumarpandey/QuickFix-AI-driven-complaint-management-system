@@ -10,7 +10,7 @@ import {
   PanelLeftClose,
   Menu,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import api from "../../utils/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -192,6 +192,7 @@ export function WorkspaceConsole() {
     let active = true;
     setWorkspace(null);
     setMember(null);
+    setQueue("");
     if (selected)
       api
         .get<{ workspace: Workspace; member: Member }>(
@@ -490,6 +491,7 @@ export function WorkspaceConsole() {
             </aside>
             {tab === "Dashboard" && staff && (
               <OperationsDashboard
+                key={workspace._id}
                 workspaceId={workspace._id}
                 name={workspace.name}
                 role={member.role}
@@ -538,10 +540,11 @@ export function WorkspaceConsole() {
               />
             )}
             {tab === "Customers" && work && (
-              <ContactsView workspace={workspace} run={run} />
+              <ContactsView key={workspace._id} workspace={workspace} run={run} />
             )}
             {tab === "Tools" && staff && (
               <ToolsView
+                key={workspace._id}
                 workspace={workspace}
                 manage={Boolean(manage)}
                 run={run}
@@ -550,6 +553,7 @@ export function WorkspaceConsole() {
             )}
             {tab === "Team" && manage && (
               <TeamView
+                key={workspace._id}
                 workspace={workspace}
                 role={member.role}
                 run={run}
@@ -558,6 +562,7 @@ export function WorkspaceConsole() {
             )}
             {tab === "Settings" && manage && (
               <SettingsView
+                key={workspace._id}
                 workspace={workspace}
                 run={run}
                 busy={busy}
@@ -565,10 +570,11 @@ export function WorkspaceConsole() {
               />
             )}
             {tab === "Connections" && manage && (
-              <ConnectionsView workspace={workspace} run={run} busy={busy} />
+              <ConnectionsView key={workspace._id} workspace={workspace} run={run} busy={busy} />
             )}
             {tab === "Billing" && manage && (
               <BillingView
+                key={workspace._id}
                 workspace={workspace}
                 owner={member.role === "owner"}
                 run={run}
@@ -578,7 +584,7 @@ export function WorkspaceConsole() {
             )}
             {tab === "Reports" &&
               ["owner", "admin", "analyst"].includes(member.role) && (
-                <ReportsView workspace={workspace} run={run} />
+                <ReportsView key={workspace._id} workspace={workspace} run={run} />
               )}
           </>
         )}
@@ -647,6 +653,10 @@ function InboxView({
     [members, setMembers] = useState<Member[]>([]),
     [search, setSearch] = useState(""),
     [status, setStatus] = useState(""),
+    [channel, setChannel] = useState(""),
+    [mine, setMine] = useState(member.role === "agent"),
+    [page, setPage] = useState(1),
+    [total, setTotal] = useState(0),
     [bucket, setBucket] = useState(initialQueue),
     [reply, setReply] = useState(""),
     [internal, setInternal] = useState(false),
@@ -677,33 +687,49 @@ function InboxView({
     } | null>(null),
     [files, setFiles] = useState<{ _id: string; name: string }[]>([]);
   const staff = member.role !== "customer";
+  const listRequest = useRef(0);
+  const currentSelection = useRef(selected);
+  currentSelection.current = selected;
+  const pageSize = 30;
   const load = useCallback(async () => {
-    const { data } = await api.get<{ tickets: Ticket[] }>(base + "/tickets", {
+    const request = ++listRequest.current;
+    const { data } = await api.get<{ tickets: Ticket[]; total: number }>(base + "/tickets", {
       params: {
+        page,
+        limit: pageSize,
+        ...(mine ? { mine: true } : {}),
+        ...(channel ? { channel } : {}),
         ...(search ? { search } : {}),
         ...(status ? { status } : {}),
         ...(bucket ? { bucket } : {}),
         ...(view ? { view } : {}),
       },
     });
+    if (request !== listRequest.current) return;
+    const lastPage = Math.max(1, Math.ceil(data.total / pageSize));
+    if (page > lastPage) {
+      setPage(lastPage);
+      return;
+    }
     setTickets(data.tickets);
-  }, [base, search, status, view, bucket]);
+    setTotal(data.total);
+  }, [base, search, status, view, bucket, channel, mine, page]);
   useEffect(() => {
     void run(load);
   }, [run, load]);
   useEffect(() => {
     if (!staff) return;
     let active = true;
-    Promise.all([
+    Promise.allSettled([
       api.get<Member[]>(base + "/members"),
       api.get<Resource[]>(base + "/resources/macro"),
       api.get<Resource[]>(base + "/resources/view"),
     ])
       .then(([a, b, c]) => {
         if (active) {
-          setMembers(a.data);
-          setMacros(b.data);
-          setViews(c.data);
+          if (a.status === "fulfilled") setMembers(a.value.data);
+          if (b.status === "fulfilled") setMacros(b.value.data);
+          if (c.status === "fulfilled") setViews(c.value.data);
         }
       })
       .catch(() => {});
@@ -716,16 +742,23 @@ function InboxView({
     const { data } = await api.get<{ ticket: Ticket; messages: Message[] }>(
       `${base}/tickets/${selected}`,
     );
-    setTicket(data.ticket);
-    setMessages(data.messages);
     const attachments = await api.get<{ _id: string; name: string }[]>(
       `${base}/tickets/${selected}/attachments`,
     );
+    if (currentSelection.current !== selected) return;
+    setTicket(data.ticket);
+    setMessages(data.messages);
     setFiles(attachments.data);
   }, [base, selected]);
   useEffect(() => {
     setTicket(null);
+    setMessages([]);
+    setFiles([]);
+    setViewers([]);
     setDraft("");
+    setSources([]);
+    setOrderInfo(null);
+    setInternal(false);
     setReply("");
     if (!selected) return;
     let active = true;
@@ -777,7 +810,7 @@ function InboxView({
             aria-label="Ticket queue"
             className={control}
             value={bucket}
-            onChange={(e) => setBucket(e.target.value)}
+            onChange={(e) => { setBucket(e.target.value); setPage(1); }}
           >
             <option value="">All tickets</option>
             <option value="open">Unresolved</option>
@@ -791,14 +824,14 @@ function InboxView({
             placeholder="Search tickets"
             aria-label="Search tickets"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => { setSearch(event.target.value); setPage(1); }}
           />
           <div className="flex gap-2">
             <select
               className={control}
               aria-label="Filter status"
               value={status}
-              onChange={(event) => setStatus(event.target.value)}
+              onChange={(event) => { setStatus(event.target.value); setPage(1); }}
             >
               <option value="">All statuses</option>
               {workspace.settings.statuses.map((value) => (
@@ -810,7 +843,7 @@ function InboxView({
                 aria-label="Saved view"
                 className={control}
                 value={view}
-                onChange={(event) => setView(event.target.value)}
+                onChange={(event) => { setView(event.target.value); setPage(1); }}
               >
                 <option value="">Saved views</option>
                 {views.map((item) => (
@@ -821,6 +854,27 @@ function InboxView({
               </select>
             )}
           </div>
+          <select
+            aria-label="Filter channel"
+            className={control}
+            value={channel}
+            onChange={(event) => { setChannel(event.target.value); setPage(1); }}
+          >
+            <option value="">All channels</option>
+            {["web", "chat", "email", "whatsapp", "phone", "instagram", "messenger"].map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </select>
+          {staff && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={mine}
+                onChange={(event) => { setMine(event.target.checked); setPage(1); }}
+              />
+              Assigned to me
+            </label>
+          )}
         </div>
         <div className="divide-y max-h-[680px] overflow-auto">
           {tickets.length === 0 && (
@@ -859,6 +913,13 @@ function InboxView({
               </div>
             </button>
           ))}
+        </div>
+        <div className="border-t p-3 flex items-center justify-between gap-2 text-xs">
+          <span role="status">{total ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}` : "0 tickets"}</span>
+          <div className="flex gap-2">
+            <button className={secondary} disabled={busy || page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
+            <button className={secondary} disabled={busy || page * pageSize >= total} onClick={() => setPage(page + 1)}>Next</button>
+          </div>
         </div>
       </section>
       <section className="min-w-0 bg-white border rounded-xl p-5 min-h-[600px]">
@@ -988,7 +1049,7 @@ function InboxView({
                         void patch({ assignedTo: event.target.value || null })
                       }
                     >
-                      <option value="">Automatic assignment</option>
+                      <option value="">Unassigned</option>
                       {members
                         .filter(
                           (item) =>
