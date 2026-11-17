@@ -12,6 +12,7 @@ import {
   Contact,
   AuthFlow,
   VoiceCall,
+  VoiceUtterance,
 } from "./models.js";
 import { encrypt, decrypt } from "./connectors.js";
 import {
@@ -20,18 +21,30 @@ import {
   ticketAccess,
   objectId,
   withActor,
+  inWorkspace,
   audit,
 } from "./access.js";
 import { requireFeature, seatAllowed } from "./entitlements.js";
 import { digest } from "./tickets.js";
 import { validate, fail } from "./validation.js";
+import { voiceDeskPublic, releaseDesk } from "./voiceDesk.js";
 const e164 = Joi.string().pattern(/^\+[1-9]\d{7,14}$/);
 const root = () =>
   new URL(process.env.BACKEND_URL || "http://localhost:5000").origin;
-export function inboundTwiML(c, digits) {
+export function startTranscription(response, c) {
+  if (c.config.voice?.liveTranscription)
+    response.start().transcription({
+      statusCallbackUrl: `${root()}/api/voice-plus/${c._id}/live-transcription`,
+      track: "both_tracks",
+      languageCode: c.config.voice.languageCode || "en-US",
+      partialResults: false,
+    });
+}
+export function inboundTwiML(c, digits, browser) {
   const cfg = c.config.voice || {},
     response = new twilio.twiml.VoiceResponse();
-  if (cfg.recordCalls) response.say(cfg.recordingNotice);
+  if (cfg.recordCalls || cfg.liveTranscription)
+    response.say(cfg.recordingNotice);
   if (cfg.ivr?.routes?.length && !digits) {
     response
       .gather({
@@ -50,22 +63,43 @@ export function inboundTwiML(c, digits) {
     if (digits && !route) {
       response.say("Invalid selection. Please try again.");
       response.redirect({ method: "POST" }, `${root()}/api/voice/${c._id}`);
-    } else
-      response.dial(
-        {
-          ...(cfg.recordCalls
-            ? {
-                record: "record-from-answer-dual",
-                recordingStatusCallback: `${root()}/api/voice-plus/${c._id}/recording`,
-                recordingStatusCallbackMethod: "POST",
-              }
-            : {}),
-          callerId: c.config.phoneNumber,
-          timeout: 25,
-          action: `${root()}/api/voice-plus/${c._id}/voicemail`,
-        },
-        route?.destination || c.config.forwardTo,
-      );
+    } else {
+      startTranscription(response, c);
+      if (browser) {
+        const client = response
+          .dial({
+            timeout: 25,
+            action: `${root()}/api/voice-plus/${c._id}/browser-fallback`,
+            ...(cfg.recordCalls
+              ? {
+                  record: "record-from-answer-dual",
+                  recordingStatusCallback: `${root()}/api/voice-plus/${c._id}/recording`,
+                }
+              : {}),
+          })
+          .client({
+            statusCallback: `${root()}/api/voice-plus/${c._id}/desk-status?call=${browser.callSid}`,
+            statusCallbackEvent: ["completed"],
+          });
+        client.identity(browser.identity);
+        client.parameter({ name: "ticketId", value: String(browser.ticket) });
+      } else
+        response.dial(
+          {
+            ...(cfg.recordCalls
+              ? {
+                  record: "record-from-answer-dual",
+                  recordingStatusCallback: `${root()}/api/voice-plus/${c._id}/recording`,
+                  recordingStatusCallbackMethod: "POST",
+                }
+              : {}),
+            callerId: c.config.phoneNumber,
+            timeout: 25,
+            action: `${root()}/api/voice-plus/${c._id}/voicemail`,
+          },
+          route?.destination || c.config.forwardTo,
+        );
+    }
   }
   return response.toString();
 }
@@ -82,6 +116,11 @@ voiceAdmin.put(
         apiKeySid: Joi.string().pattern(/^SK[a-f0-9]{32}$/i),
         apiKeySecret: Joi.string().max(1000),
         appSid: Joi.string().pattern(/^AP[a-f0-9]{32}$/i),
+        browserInbound: Joi.boolean().default(false),
+        liveTranscription: Joi.boolean().default(false),
+        languageCode: Joi.string()
+          .valid("en-US", "en-IN", "hi-IN")
+          .default("en-US"),
         recordCalls: Joi.boolean().default(false),
         recordingNotice: Joi.string().max(500).allow("").default(""),
         ivr: Joi.object({
@@ -100,11 +139,14 @@ voiceAdmin.put(
             .max(10)
             .unique("digit")
             .required(),
-        }),
+        }).allow(null),
       }).and("apiKeySid", "apiKeySecret", "appSid"),
       req.body,
     );
-    if (cfg.recordCalls && cfg.recordingNotice.trim().length < 10)
+    if (
+      (cfg.recordCalls || cfg.liveTranscription) &&
+      cfg.recordingNotice.trim().length < 10
+    )
       throw fail("A recording notice is required before enabling recording");
     await withActor(req, async (session, w) => {
       const c = await Connector.findOne({
@@ -171,6 +213,7 @@ voiceAdmin.post(
               connector: String(c._id),
               ticket: String(ticket._id),
               phone,
+              claims: req.authClaims,
             },
           },
         ],
@@ -312,30 +355,78 @@ voicePublic.post(
       await import("../models/User.js")
     ).findUserById(flow.user);
     if (!user || user.isActive === false) throw fail("Account disabled", 403);
+    const { sessionAllowed } = await import("../services/tokenService.js");
+    if (
+      !flow.payload.claims ||
+      (flow.payload.claims.exp &&
+        flow.payload.claims.exp * 1000 <= Date.now()) ||
+      !sessionAllowed(user, flow.payload.claims)
+    )
+      throw fail("Call authorization revoked", 403);
+    const { assertMFA } = await import("./security.js");
+    await assertMFA(user, flow.payload.claims);
     const request = { workspace: w, member, user };
     const ticket = await ticketAccess(request, flow.payload.ticket);
     if (!/^CA[a-f0-9]{32}$/i.test(req.body.CallSid || ""))
       throw fail("Invalid call ID");
-    await VoiceCall.updateOne(
-      { callSid: req.body.CallSid },
-      {
-        $setOnInsert: {
-          workspace: w._id,
-          ticket: ticket._id,
-          connector: c._id,
-          direction: "outbound-browser",
-          status: "initiated",
-          recordingConsent: !!c.config.voice?.recordCalls,
-        },
-      },
-      { upsert: true },
-    );
+    await inWorkspace(w._id, async (session, fresh) => {
+      requireFeature(fresh, "voice");
+      const current = await Membership.findOne({
+        _id: member._id,
+        workspace: fresh._id,
+        active: true,
+        role: { $in: ["owner", "admin", "agent"] },
+      }).session(session);
+      if (!current || !(await seatAllowed(fresh, current, session)))
+        throw fail("Staff access revoked", 403);
+      if (
+        current.customRole &&
+        !(await CustomRole.exists({
+          _id: current.customRole,
+          workspace: fresh._id,
+          permissions: "tickets.write",
+        }).session(session))
+      )
+        throw fail("Calling permission revoked", 403);
+      await ticketAccess(
+        { workspace: fresh, member: current, user },
+        ticket._id,
+        session,
+      );
+      if (
+        await VoiceCall.exists({
+          workspace: fresh._id,
+          deskMember: current._id,
+          status: { $in: ["ringing", "initiated", "in-progress"] },
+          createdAt: { $gt: new Date(Date.now() - 4 * 3600000) },
+        }).session(session)
+      )
+        throw fail("An agent call is already active", 409);
+      await VoiceCall.create(
+        [
+          {
+            workspace: fresh._id,
+            ticket: ticket._id,
+            connector: c._id,
+            callSid: req.body.CallSid,
+            direction: "outbound-browser",
+            status: "initiated",
+            recordingConsent: !!c.config.voice?.recordCalls,
+            transcriptionEnabled: !!c.config.voice?.liveTranscription,
+            deskMember: current._id,
+          },
+        ],
+        { session },
+      );
+    });
     const response = new twilio.twiml.VoiceResponse();
-    if (c.config.voice?.recordCalls)
+    if (c.config.voice?.recordCalls || c.config.voice?.liveTranscription)
       response.say(c.config.voice.recordingNotice);
+    startTranscription(response, c);
     response
       .dial({
         callerId: c.config.phoneNumber,
+        action: `${root()}/api/voice-plus/${c._id}/call-ended`,
         ...(c.config.voice?.recordCalls
           ? {
               record: "record-from-answer-dual",
@@ -344,7 +435,7 @@ voicePublic.post(
           : {}),
       })
       .number(
-        c.config.voice?.recordCalls
+        c.config.voice?.recordCalls || c.config.voice?.liveTranscription
           ? { url: `${root()}/api/voice-plus/${c._id}/notice`, method: "POST" }
           : {},
         flow.payload.phone,
@@ -356,7 +447,10 @@ voicePublic.post(
   "/:id/notice",
   wrap(async (req, res) => {
     const response = new twilio.twiml.VoiceResponse();
-    if (req.voiceConnector.config.voice?.recordCalls)
+    if (
+      req.voiceConnector.config.voice?.recordCalls ||
+      req.voiceConnector.config.voice?.liveTranscription
+    )
       response.say(req.voiceConnector.config.voice.recordingNotice);
     res.type("text/xml").send(response.toString());
   }),
@@ -392,6 +486,11 @@ voicePublic.post(
   wrap(async (req, res) => {
     const response = new twilio.twiml.VoiceResponse(),
       c = req.voiceConnector;
+    await releaseDesk(
+      req.voiceWorkspace._id,
+      req.body.CallSid,
+      req.body.DialCallStatus || "no-answer",
+    );
     if (["completed", "answered"].includes(req.body.DialCallStatus)) {
       response.hangup();
     } else if (c.config.voice?.recordCalls) {
@@ -432,5 +531,82 @@ voicePublic.post(
       },
     );
     res.sendStatus(204);
+  }),
+);
+
+voicePublic.post(
+  "/:id/live-transcription",
+  wrap(async (req, res) => {
+    const b = req.body;
+    if (b.TranscriptionEvent !== "transcription-content" || b.Final !== "true")
+      return res.sendStatus(204);
+    if (
+      !/^GT[a-f0-9]{32}$/i.test(b.TranscriptionSid || "") ||
+      !/^\d{1,9}$/.test(b.SequenceId || "") ||
+      !["inbound_track", "outbound_track"].includes(b.Track)
+    )
+      throw fail("Invalid transcription callback");
+    const call = await VoiceCall.findOne({
+      workspace: req.voiceWorkspace._id,
+      connector: req.voiceConnector._id,
+      callSid: b.CallSid,
+      transcriptionEnabled: true,
+    });
+    if (!call) return res.sendStatus(204);
+    let data;
+    try {
+      data = JSON.parse(b.TranscriptionData);
+    } catch {
+      throw fail("Invalid transcription data");
+    }
+    if (typeof data.transcript !== "string" || data.transcript.length > 10000)
+      throw fail("Invalid transcript");
+    await VoiceUtterance.updateOne(
+      {
+        workspace: call.workspace,
+        call: call._id,
+        transcriptionSid: b.TranscriptionSid,
+        track: b.Track,
+        sequence: Number(b.SequenceId),
+      },
+      {
+        $setOnInsert: {
+          text: data.transcript,
+          confidence:
+            typeof data.confidence === "number" ? data.confidence : undefined,
+          spokenAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+    res.sendStatus(204);
+  }),
+);
+voicePublic.use("/:id", voiceDeskPublic);
+voiceAdmin.get(
+  "/:workspaceId/tickets/:ticketId/calls/:callId/transcript",
+  permit("owner", "admin", "agent"),
+  wrap(async (req, res) => {
+    const ticket = await ticketAccess(req, req.params.ticketId);
+    const call = await VoiceCall.findOne({
+      _id: objectId(req.params.callId),
+      ticket: ticket._id,
+      workspace: req.workspace._id,
+    });
+    if (!call) throw fail("Call not found", 404);
+    const { after } = validate(
+      Joi.object({ after: Joi.string().hex().length(24) }),
+      req.query,
+    );
+    res.set("Cache-Control", "no-store").json(
+      await VoiceUtterance.find({
+        workspace: req.workspace._id,
+        call: call._id,
+        ...(after ? { _id: { $gt: objectId(after) } } : {}),
+      })
+        .sort({ _id: 1 })
+        .limit(200)
+        .lean(),
+    );
   }),
 );

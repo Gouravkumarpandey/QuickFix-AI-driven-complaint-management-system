@@ -10,6 +10,7 @@ interface Record {
   recordingSid?: string;
   transcription?: string;
   createdAt: string;
+  transcriptionEnabled?: boolean;
 }
 export default function Softphone({
   base,
@@ -26,11 +27,17 @@ export default function Softphone({
     [muted, setMuted] = useState(false),
     [records, setRecords] = useState<Record[]>([]),
     [busy, setBusy] = useState(false);
-  const load = async () =>
-    setRecords((await api.get(`${base}/tickets/${ticketId}/calls`)).data);
+  const load = async () => {
+    const { data } = await api.get<Record[]>(
+      `${base}/tickets/${ticketId}/calls`,
+    );
+    setRecords(data);
+  };
   useEffect(() => {
     void load().catch(() => {});
+    const timer = setInterval(() => void load().catch(() => {}), 5000);
     return () => {
+      clearInterval(timer);
       active.current?.disconnect();
       device.current?.destroy();
     };
@@ -154,6 +161,12 @@ export default function Softphone({
               Voicemail transcript: {r.transcription}
             </p>
           )}
+          {r.transcriptionEnabled && (
+            <Transcript
+              url={`${base}/tickets/${ticketId}/calls/${r._id}/transcript`}
+              live={["ringing", "initiated", "in-progress"].includes(r.status)}
+            />
+          )}
           {r.recordingSid && (
             <button
               type="button"
@@ -179,5 +192,81 @@ export default function Softphone({
         </div>
       ))}
     </section>
+  );
+}
+
+type Utterance = { _id: string; text: string; track: string };
+function Transcript({ url, live }: { url: string; live: boolean }) {
+  const [open, setOpen] = useState(live),
+    [rows, setRows] = useState<Utterance[]>([]),
+    [more, setMore] = useState(true),
+    [error, setError] = useState("");
+  const cursor = useRef(""),
+    loading = useRef(false),
+    mounted = useRef(true);
+  async function load() {
+    if (loading.current) return;
+    loading.current = true;
+    try {
+      const { data } = await api.get<Utterance[]>(url, {
+        params: cursor.current ? { after: cursor.current } : {},
+      });
+      if (!mounted.current) return;
+      if (data.length) cursor.current = data[data.length - 1]._id;
+      setRows((old) => {
+        const ids = new Set(old.map((u) => u._id));
+        return [...old, ...data.filter((u) => !ids.has(u._id))];
+      });
+      setMore(data.length === 200);
+      setError("");
+    } catch {
+      if (mounted.current) setError("Unable to load transcript. Try again.");
+    } finally {
+      loading.current = false;
+    }
+  }
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    void load();
+    if (!live) return;
+    const timer = setInterval(() => void load(), 5000);
+    return () => clearInterval(timer);
+  }, [url, open, live]);
+  return (
+    <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer">
+        Conversation transcript{live ? " · live" : ""}
+      </summary>
+      <div className="space-y-1 mt-2" aria-label="Live conversation transcript">
+        {rows.map((u) => (
+          <p key={u._id}>
+            <span className="text-slate-500">
+              {u.track === "inbound_track"
+                ? "Incoming audio"
+                : "Outgoing audio"}
+              :
+            </span>{" "}
+            {u.text}
+          </p>
+        ))}
+        {!rows.length && !error && <p>No final transcript segments yet.</p>}
+        {error && <p role="status">{error}</p>}
+        {(more || error) && (
+          <button
+            type="button"
+            className="underline"
+            onClick={() => void load()}
+          >
+            Load more transcript
+          </button>
+        )}
+      </div>
+    </details>
   );
 }

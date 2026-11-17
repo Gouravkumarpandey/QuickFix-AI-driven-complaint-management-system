@@ -67,6 +67,7 @@ export const Membership = model(
     capacity: { type: Number, default: 5 },
     online: { type: Boolean, default: true },
     groups: { type: [String], default: ["General"] },
+    scimGroups: [String],
     skills: [String],
     customRole: Schema.Types.ObjectId,
     entitlementSuspended: { type: Boolean, default: false },
@@ -421,6 +422,9 @@ export const VoiceCall = model("WorkspaceVoiceCall", {
   recordingDuration: Number,
   transcription: String,
   recordingConsent: Boolean,
+  deskMember: Schema.Types.ObjectId,
+  transcriptionEnabled: Boolean,
+  fallbackNumber: String,
 });
 export const ProvisionKey = model("WorkspaceProvisionKey", {
   workspace: id,
@@ -480,3 +484,77 @@ export const AIBenchmark = model("WorkspaceAIBenchmark", {
   passRate: Number,
   completedAt: Date,
 });
+
+export const VoiceDesk = model(
+  "WorkspaceVoiceDesk",
+  {
+    workspace: id,
+    member: id,
+    connector: id,
+    identity: String,
+    sessionHash: { type: String, select: false },
+    claims: { type: Schema.Types.Mixed, select: false },
+    expiresAt: Date,
+    currentCall: String,
+    callUntil: Date,
+  },
+  [
+    [{ workspace: 1, member: 1 }, { unique: true }],
+    [{ expiresAt: 1 }, { expireAfterSeconds: 0 }],
+  ],
+);
+export const VoiceUtterance = model(
+  "WorkspaceVoiceUtterance",
+  {
+    workspace: id,
+    call: id,
+    transcriptionSid: String,
+    sequence: Number,
+    track: String,
+    text: String,
+    confidence: Number,
+    spokenAt: Date,
+  },
+  [
+    [
+      { workspace: 1, call: 1, transcriptionSid: 1, track: 1, sequence: 1 },
+      { unique: true },
+    ],
+  ],
+);
+export const ProvisionGroup = model(
+  "WorkspaceProvisionGroup",
+  {
+    workspace: id,
+    displayName: String,
+    externalId: String,
+    members: [Schema.Types.ObjectId],
+  },
+  [
+    [{ workspace: 1, displayName: 1 }, { unique: true }],
+    [
+      { workspace: 1, externalId: 1 },
+      {
+        unique: true,
+        partialFilterExpression: { externalId: { $type: "string" } },
+      },
+    ],
+  ],
+);
+export const EInvoiceSubmission = model(
+  "WorkspaceEInvoiceSubmission",
+  {
+    workspace: id,
+    invoice: id,
+    environment: String,
+    state: String,
+    payload: Schema.Types.Mixed,
+    payloadHash: String,
+    reviewedBy: id,
+    reviewedAt: Date,
+    acknowledgement: Schema.Types.Mixed,
+    error: String,
+    submittedAt: Date,
+  },
+  [[{ workspace: 1, invoice: 1, environment: 1 }, { unique: true }]],
+);

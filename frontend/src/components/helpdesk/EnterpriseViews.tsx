@@ -1409,6 +1409,7 @@ export function TicketChannelActions({
   const [name, setName] = useState(""),
     [language, setLanguage] = useState("en"),
     [parameters, setParameters] = useState(""),
+    [headerFile, setHeaderFile] = useState(""),
     [header, setHeader] = useState(""),
     [buttons, setButtons] = useState("[]"),
     [file, setFile] = useState(""),
@@ -1416,7 +1417,9 @@ export function TicketChannelActions({
     [connection, setConnection] = useState(""),
     [external, setExternal] = useState(""),
     [verified, setVerified] = useState(false),
-    [files, setFiles] = useState<{ _id: string; name: string }[]>([]);
+    [files, setFiles] = useState<
+      { _id: string; name: string; mime: string; internal?: boolean }[]
+    >([]);
   useEffect(() => {
     api
       .get(`${base}/tickets/${ticketId}/attachments`)
@@ -1471,7 +1474,11 @@ export function TicketChannelActions({
                       name,
                       language,
                       parameters: parameters ? parameters.split("\n") : [],
-                      ...(header ? { header } : {}),
+                      ...(headerFile
+                        ? { headerAttachmentId: headerFile }
+                        : header
+                          ? { header }
+                          : {}),
                       buttons: JSON.parse(buttons),
                     },
                   });
@@ -1488,6 +1495,35 @@ export function TicketChannelActions({
               onChange={(e) => setHeader(e.target.value)}
             />
             <label className="block text-xs">
+              Approved template media header
+              <select
+                className={input}
+                value={headerFile}
+                onChange={(e) => {
+                  setHeaderFile(e.target.value);
+                  if (e.target.value) setHeader("");
+                }}
+              >
+                <option value="">No media header</option>
+                {files
+                  .filter(
+                    (f) =>
+                      !f.internal &&
+                      [
+                        "image/png",
+                        "image/jpeg",
+                        "application/pdf",
+                        "video/mp4",
+                      ].includes(f.mime),
+                  )
+                  .map((f) => (
+                    <option key={f._id} value={f._id}>
+                      {f.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="block text-xs">
               Button parameters (index, type url/quick_reply, value)
               <textarea
                 className={input + " font-mono mt-1"}
@@ -1503,11 +1539,13 @@ export function TicketChannelActions({
               onChange={(e) => setFile(e.target.value)}
             >
               <option value="">Select an uploaded public attachment</option>
-              {files.map((f) => (
-                <option value={f._id} key={f._id}>
-                  {f.name}
-                </option>
-              ))}
+              {files
+                .filter((f) => !f.internal)
+                .map((f) => (
+                  <option value={f._id} key={f._id}>
+                    {f.name}
+                  </option>
+                ))}
             </select>
             <input
               className={input}

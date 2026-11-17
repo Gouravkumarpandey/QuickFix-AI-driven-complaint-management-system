@@ -1,3 +1,4 @@
+import EInvoiceSetup from "./EInvoiceSetup";
 import {
   useCallback,
   useEffect,
@@ -248,6 +249,8 @@ function VoiceSetup({
   connections,
 }: Props & { connections: Connector[] }) {
   const [connection, setConnection] = useState(""),
+    [inbound, setInbound] = useState(false),
+    [live, setLive] = useState(false),
     [record, setRecord] = useState(false),
     [ivr, setIVR] = useState(false);
   return (
@@ -275,9 +278,12 @@ function VoiceSetup({
                       appSid: get("appSid"),
                     }
                   : {}),
+                browserInbound: inbound,
+                liveTranscription: live,
+                languageCode: get("languageCode"),
                 recordCalls: record,
                 recordingNotice: get("notice"),
-                ...(ivr ? { ivr: { greeting: get("greeting"), routes } } : {}),
+                ivr: ivr ? { greeting: get("greeting"), routes } : null,
               },
             );
             if (data.dialCallback)
@@ -320,10 +326,34 @@ function VoiceSetup({
           />
           Enable recording and voicemail transcription
         </label>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={inbound}
+            onChange={(e) => setInbound(e.target.checked)}
+          />
+          Route incoming calls to available browser agents
+        </label>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={live}
+            onChange={(e) => setLive(e.target.checked)}
+          />
+          Transcribe live conversations
+        </label>
+        <label className="block text-sm">
+          Transcription language
+          <select name="languageCode" className={input}>
+            <option value="en-US">English (US)</option>
+            <option value="en-IN">English (India)</option>
+            <option value="hi-IN">Hindi</option>
+          </select>
+        </label>
         <Field
           label="Recording notice played to callers"
           name="notice"
-          required={record}
+          required={record || live}
           placeholder="This call may be recorded…"
         />
         <label className="flex gap-2 text-sm">
@@ -358,9 +388,11 @@ function VoiceSetup({
         </button>
       </form>
       <p className="text-xs text-slate-500">
-        Live call recordings and voicemail transcripts depend on provider
-        availability and the configured notice. Provider transcription here
-        covers voicemail, not a live agent conversation.
+        Agents must connect their browser phone and stay online to receive
+        calls. Keypad team labels match manual or SCIM routing groups.
+        Unanswered browser calls fall back to the company forwarding number.
+        Live transcription requires Twilio Real-Time Transcriptions and the
+        configured notice; provider charges apply.
       </p>
     </Card>
   );
@@ -586,7 +618,10 @@ function IdentitySetup({ workspaceId, slug, role, run }: Props) {
           <p className="text-xs text-slate-500">
             Set the IdP’s SCIM externalId to its persistent SAML NameID.
             Existing accounts must join the workspace explicitly before
-            provisioning. SCIM groups and password changes are not supported.
+            provisioning. SCIM Groups supports create, replace, add/remove
+            members and deletion. Group names become routing groups; permissions
+            remain controlled by company roles. Password changes are not
+            supported.
           </p>
         </div>
       )}
@@ -894,6 +929,12 @@ function AccountingSetup({ workspaceId, role, run }: Props) {
           </button>
         </form>
       </Card>
+      <EInvoiceSetup
+        workspaceId={workspaceId}
+        invoiceId={invoice}
+        owner={role === "owner"}
+        run={run}
+      />
       <Card title="Create a credit note">
         <form
           className="flex flex-wrap items-end gap-3"

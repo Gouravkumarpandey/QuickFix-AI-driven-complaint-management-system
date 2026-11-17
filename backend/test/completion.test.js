@@ -176,3 +176,79 @@ test("backups authenticate ciphertext and reject tampering before publishing dec
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("browser routing emits client parameters and live transcription after notice", () => {
+  const c = {
+    _id: "a".repeat(24),
+    config: {
+      phoneNumber: "+919000000001",
+      forwardTo: "+919000000002",
+      voice: {
+        liveTranscription: true,
+        recordingNotice: "This call is transcribed.",
+        languageCode: "hi-IN",
+      },
+    },
+  };
+  const xml = inboundTwiML(c, undefined, {
+    identity: "desk_fixture",
+    ticket: "b".repeat(24),
+    callSid: "CA" + "c".repeat(32),
+  });
+  assert.ok(xml.indexOf("<Say>") < xml.indexOf("<Start>"));
+  assert.ok(xml.includes('languageCode="hi-IN"'));
+  assert.ok(xml.includes("<Identity>desk_fixture</Identity>"));
+  assert.ok(xml.includes("browser-fallback"));
+});
+test("ClearTax adapter distinguishes rejection, sandbox acknowledgements and uncertain outcomes", async () => {
+  const { submitEInvoice } = await import("../src/helpdesk/einvoicing.js");
+  const prev = process.env.CLEARTAX_AUTH_TOKEN,
+    gst = process.env.CLEARTAX_SELLER_GSTIN;
+  process.env.CLEARTAX_AUTH_TOKEN = "fixture";
+  process.env.CLEARTAX_SELLER_GSTIN = "20AAAAA0000A1Z5";
+  const row = {
+    environment: "sandbox",
+    payload: { SellerDtls: { Gstin: "20AAAAA0000A1Z5" } },
+  };
+  try {
+    const result = await submitEInvoice(row, async (url, options) => {
+      assert.equal(
+        url,
+        "https://api-sandbox.clear.in/einv/v1/govt/api/Invoice/",
+      );
+      assert.equal(options.headers.gstin, row.payload.SellerDtls.Gstin);
+      return Response.json({
+        Success: "Y",
+        Irn: "a".repeat(64),
+        AckNo: 162010000001700,
+        AckDt: "2026-11-17 10:00:00",
+        SignedQRCode: "signed-qr",
+      });
+    });
+    assert.equal(result.state, "sandbox-registered");
+    assert.equal(
+      (await submitEInvoice(row, async () => Response.json({ Success: "N" })))
+        .state,
+      "rejected",
+    );
+    await assert.rejects(
+      () =>
+        submitEInvoice(
+          row,
+          async () => new Response("unavailable", { status: 503 }),
+        ),
+      /unknown/,
+    );
+    await assert.rejects(
+      () =>
+        submitEInvoice({ ...row, environment: "production" }, async () => {
+          throw Error("must not call");
+        }),
+      /not enabled/,
+    );
+  } finally {
+    if (prev) process.env.CLEARTAX_AUTH_TOKEN = prev;
+    else delete process.env.CLEARTAX_AUTH_TOKEN;
+    if (gst) process.env.CLEARTAX_SELLER_GSTIN = gst;
+    else delete process.env.CLEARTAX_SELLER_GSTIN;
+  }
+});
