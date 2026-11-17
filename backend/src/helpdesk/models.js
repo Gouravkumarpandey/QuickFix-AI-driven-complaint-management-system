@@ -558,3 +558,32 @@ export const EInvoiceSubmission = model(
   },
   [[{ workspace: 1, invoice: 1, environment: 1 }, { unique: true }]],
 );
+export const CustomerEmailOTP = model(
+  "WorkspaceCustomerEmailOTP",
+  {
+    workspace: id,
+    ticket: id,
+    challengeHash: { type: String, select: false },
+    codeHash: { type: String, select: false },
+    attempts: { type: Number, default: 0 },
+    expiresAt: Date,
+    sentAt: Date,
+  },
+  [
+    [{ workspace: 1, ticket: 1 }, { unique: true }],
+    [{ expiresAt: 1 }, { expireAfterSeconds: 0 }],
+  ],
+);
+export const CustomerEmailLimit = model(
+  "WorkspaceCustomerEmailLimit",
+  {
+    workspace: id,
+    emailHash: String,
+    count: Number,
+    expiresAt: Date,
+  },
+  [
+    [{ workspace: 1, emailHash: 1 }, { unique: true }],
+    [{ expiresAt: 1 }, { expireAfterSeconds: 0 }],
+  ],
+);

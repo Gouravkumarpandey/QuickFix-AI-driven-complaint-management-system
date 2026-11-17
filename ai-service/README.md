@@ -388,3 +388,16 @@ curl -X POST http://localhost:8001/reply \
 - Summarization: 500-1500ms (depends on input length)
 - Reply (OpenAI API): 1-3 seconds
 - Reply (Local): 2-10 seconds (varies by model)
+
+## Validation and startup
+
+Both `python main.py` and `uvicorn app.main:app --port 8001` start the same FastAPI app. `/` and `/health` report service availability without importing heavyweight inference models. Model modules load on their first inference request; cache/download the documented Hugging Face weights and provide enough memory before live use. Model configuration/loading failures return an explicit 503, not a fabricated answer. Health alone does not certify model readiness or answer accuracy.
+
+Run lightweight API contract tests without model downloads:
+
+```bash
+python -m pip install -r requirements-test.txt
+python -m unittest -v test_service
+```
+
+These tests exercise startup, all five endpoint contracts, input limits and failure behavior using model-adapter fixtures. Actual inference quality/latency and external provider delivery require separate live acceptance tests with the intended models/credentials.

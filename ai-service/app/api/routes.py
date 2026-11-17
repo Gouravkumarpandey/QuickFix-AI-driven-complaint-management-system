@@ -1,59 +1,69 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, constr
 from typing import List, Optional
-from app.models import classifier, sentiment, embedder, summarizer, reply_gen
+import importlib
+import logging
+
+logger = logging.getLogger(__name__)
+
+def get_model(name):
+    # Health and validation must work without downloading all model weights.
+    return importlib.import_module("app.models." + name)
 
 router = APIRouter()
 
 class ClassifyRequest(BaseModel):
-    text: str
-    labels: Optional[List[str]] = None
+    text: constr(strip_whitespace=True, min_length=1, max_length=10000)
+    labels: Optional[List[constr(strip_whitespace=True, min_length=1, max_length=100)]] = Field(default=None, min_length=1, max_length=32)
 
 class SentimentRequest(BaseModel):
-    text: str
+    text: constr(strip_whitespace=True, min_length=1, max_length=10000)
 
 class EmbedRequest(BaseModel):
-    text: str
+    text: constr(strip_whitespace=True, min_length=1, max_length=10000)
 
 class SummarizeRequest(BaseModel):
-    text: str
+    text: constr(strip_whitespace=True, min_length=50, max_length=10000)
     max_length: Optional[int] = Field(default=120, ge=30, le=500)
     min_length: Optional[int] = Field(default=30, ge=10, le=200)
 
 class ReplyRequest(BaseModel):
-    text: str
-    kb_context: Optional[List[str]] = None
+    text: constr(strip_whitespace=True, min_length=10, max_length=10000)
+    kb_context: Optional[List[constr(max_length=4000)]] = Field(default=None, max_length=10)
     tone: Optional[str] = Field(default="polite", pattern="^(polite|friendly|professional|empathetic)$")
 
 @router.post("/classify")
-async def classify_text(request: ClassifyRequest):
+def classify_text(request: ClassifyRequest):
     try:
-        result = classifier.classify_text(request.text, request.labels)
+        result = get_model("classifier").classify_text(request.text, request.labels)
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("AI inference failed")
+        raise HTTPException(status_code=503, detail="AI model unavailable; check service configuration") from e
 
 @router.post("/sentiment")
-async def analyze_sentiment(request: SentimentRequest):
+def analyze_sentiment(request: SentimentRequest):
     try:
-        result = sentiment.analyze_sentiment(request.text)
+        result = get_model("sentiment").analyze_sentiment(request.text)
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("AI inference failed")
+        raise HTTPException(status_code=503, detail="AI model unavailable; check service configuration") from e
 
 @router.post("/embed")
-async def get_embedding(request: EmbedRequest):
+def get_embedding(request: EmbedRequest):
     try:
-        embedding = embedder.get_embedding(request.text)
+        embedding = get_model("embedder").get_embedding(request.text)
         return {
             "embedding": embedding,
             "dimensions": len(embedding)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("AI inference failed")
+        raise HTTPException(status_code=503, detail="AI model unavailable; check service configuration") from e
 
 @router.post("/summarize")
-async def summarize_text(request: SummarizeRequest):
+def summarize_text(request: SummarizeRequest):
     """
     Generate an abstractive summary of the input text.
     
@@ -65,7 +75,9 @@ async def summarize_text(request: SummarizeRequest):
     Note: Requires at least 50 characters of input text.
     """
     try:
-        result = summarizer.summarize_text(
+        if request.min_length > request.max_length:
+            raise ValueError("min_length cannot exceed max_length")
+        result = get_model("summarizer").summarize_text(
             text=request.text,
             max_length=request.max_length,
             min_length=request.min_length
@@ -74,10 +86,11 @@ async def summarize_text(request: SummarizeRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
+        logger.exception("Summarization failed")
+        raise HTTPException(status_code=503, detail="Summarization unavailable; check service configuration") from e
 
 @router.post("/reply")
-async def generate_reply(request: ReplyRequest):
+def generate_reply(request: ReplyRequest):
     """
     Generate a draft reply for a support ticket using RAG approach.
     
@@ -96,7 +109,7 @@ async def generate_reply(request: ReplyRequest):
     - Falls back to local model if no API keys set
     """
     try:
-        result = reply_gen.generate_reply(
+        result = get_model("reply_gen").generate_reply(
             ticket_text=request.text,
             kb_context=request.kb_context,
             tone=request.tone
@@ -105,4 +118,5 @@ async def generate_reply(request: ReplyRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Reply generation failed: {str(e)}")
+        logger.exception("Reply generation failed")
+        raise HTTPException(status_code=503, detail="Reply generation unavailable; check service configuration") from e

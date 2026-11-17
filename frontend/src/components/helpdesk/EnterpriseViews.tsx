@@ -1429,20 +1429,24 @@ export function TicketChannelActions({
   return (
     <details className="border-t pt-4 mt-5 text-sm">
       <summary className="cursor-pointer text-slate-500">
-        Phone, WhatsApp and customer identity
+        Optional channels and customer identity
       </summary>
       <div className="space-y-3 mt-4">
-        <Softphone key={ticketId} base={base} ticketId={ticketId} run={run} />
-        <button
-          className={secondary}
-          onClick={() =>
-            void run(async () => {
-              await api.post(`${base}/tickets/${ticketId}/call`);
-            }, "Phone call initiated. Provider charges apply.")
-          }
-        >
-          Call customer through the connected phone provider
-        </button>
+        {channel === "phone" && (
+          <Softphone key={ticketId} base={base} ticketId={ticketId} run={run} />
+        )}
+        {channel === "phone" && (
+          <button
+            className={secondary}
+            onClick={() =>
+              void run(async () => {
+                await api.post(`${base}/tickets/${ticketId}/call`);
+              }, "Phone call initiated. Provider charges apply.")
+            }
+          >
+            Call customer through the connected phone provider
+          </button>
+        )}
         {channel === "whatsapp" && (
           <>
             <h4 className="font-medium">Send an approved WhatsApp template</h4>
