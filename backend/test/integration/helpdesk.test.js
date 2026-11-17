@@ -421,6 +421,48 @@ test("macros, automation, saved views, custom fields and collision checks operat
   );
   assert.equal(list.total, 1);
 });
+test("inbox pagination, personal queues and social-channel saved views preserve workspace scope", async () => {
+  const first = await createTicket(alice, a);
+  const member = await Membership.findOne({ workspace: a._id, user: alice._id });
+  await Ticket.updateOne({ _id: first._id }, { $set: { assignedTo: null } });
+  // Equal timestamps reproduce unstable offset pagination unless ID is a tie-breaker.
+  const timestamp = new Date();
+  const rows = Array.from({ length: 34 }, (_, index) => ({
+    workspace: a._id,
+    contact: first.contact,
+    number: `QF-PAGE-${index}`,
+    subject: `Inbox ticket ${index}`,
+    description: "Pagination regression",
+    channel: ["phone", "instagram", "messenger"][index % 3],
+    assignedTo: index % 2 ? member._id : null,
+    updatedAt: timestamp,
+    createdAt: timestamp,
+  }));
+  await Ticket.insertMany(rows);
+  await createTicket(bob, b);
+  const path = `/workspaces/${a._id}`;
+  const firstPage = await body(await call(alice, `${path}/tickets?limit=30`));
+  const secondPage = await body(await call(alice, `${path}/tickets?limit=30&page=2`));
+  assert.equal(firstPage.total, 35);
+  assert.equal(firstPage.limit, 30);
+  assert.equal(secondPage.tickets.length, 5);
+  assert.equal(new Set([...firstPage.tickets, ...secondPage.tickets].map(t => t._id)).size, 35);
+  const mine = await body(await call(alice, `${path}/tickets?mine=true`));
+  assert.equal(mine.total, 17);
+  assert.ok(mine.tickets.every(t => t.assignedTo._id === String(member._id)));
+  const unassignedMine = await body(await call(alice, `${path}/tickets?mine=true&bucket=unassigned`));
+  assert.equal(unassignedMine.total, 0);
+  for (const channel of ["phone", "instagram", "messenger"]) {
+    const saved = await body(await call(alice, `${path}/resources/view`, "POST", {
+      name: `${channel} queue`, value: { channel },
+    }));
+    const result = await body(await call(alice, `${path}/tickets?view=${saved._id}`));
+    assert.ok(result.total > 0);
+    assert.ok(result.tickets.every(t => t.channel === channel));
+  }
+  assert.equal((await call(alice, `${path}/tickets?page=0`)).status, 400);
+  assert.equal((await call(alice, `${path}/tickets?channel=unknown`)).status, 400);
+});
 test("merging refuses unrelated customers and moves only same-workspace conversations", async () => {
   const first = await createTicket(alice, a),
     second = await createTicket(alice, a, "Another delivery issue");

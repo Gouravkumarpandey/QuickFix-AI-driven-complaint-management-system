@@ -389,7 +389,6 @@ router.get(
     for (const key of ["status", "priority", "channel", "group"])
       if (selected[key]) query[key] = selected[key];
     if (selected.assignedTo) query.assignedTo = selected.assignedTo;
-    if (selected.mine) query.assignedTo = req.member._id;
     if (selected.bucket === "open")
       query.status = { $nin: ["Resolved", "Closed"] };
     if (selected.bucket === "resolved")
@@ -422,6 +421,9 @@ router.get(
         },
       ];
     }
+    // Personal scope must intersect every queue, including unassigned.
+    if (selected.mine)
+      (query.$and ||= []).push({ assignedTo: req.member._id });
 
     if (selected.search)
       query.$or = ["subject", "number"].map((field) => ({
@@ -439,7 +441,7 @@ router.get(
     }
     const [tickets, total] = await Promise.all([
       Ticket.find(query)
-        .sort({ updatedAt: -1 })
+        .sort({ updatedAt: -1, _id: -1 })
         .skip((input.page - 1) * input.limit)
         .limit(input.limit)
         .populate("contact", "name email company")
@@ -447,7 +449,7 @@ router.get(
         .lean(),
       Ticket.countDocuments(query),
     ]);
-    res.json({ tickets, total, page: input.page });
+    res.json({ tickets, total, page: input.page, limit: input.limit });
   }),
 );
 router.post(

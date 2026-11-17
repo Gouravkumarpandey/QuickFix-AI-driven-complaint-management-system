@@ -30,7 +30,7 @@ async function main() {
   process.env.INTEGRATION_ENCRYPTION_KEY = "5".repeat(64);
   await mongoose.connect(process.env.MONGODB_URI);
   const { User } = await import("../../src/models/User.js");
-  const { Workspace, Membership, Article, Resource } = await import(
+  const { Workspace, Membership, Article, Resource, Ticket } = await import(
     "../../src/helpdesk/models.js"
   );
   const { inWorkspace } = await import("../../src/helpdesk/access.js");
@@ -91,6 +91,14 @@ async function main() {
         )
       ).ticket,
     );
+  await Ticket.insertMany(Array.from({ length: 31 }, (_, index) => ({
+    workspace: workspace._id,
+    contact: tickets[0].contact,
+    number: `QF-BROWSER-PAGE-${index}`,
+    subject: `Phone pagination fixture ${index}`,
+    description: "Phone channel pagination regression",
+    channel: "phone",
+  })));
   await Article.create({
     workspace: workspace._id,
     slug: "track-your-order",
@@ -199,6 +207,17 @@ async function main() {
   await page
     .getByRole("heading", { name: "Support inbox", exact: true })
     .waitFor();
+  await page.getByLabel("Filter channel", { exact: true }).selectOption("phone");
+  await page.getByText("1–30 of 31", { exact: true }).waitFor();
+  const firstPhonePage = await page.getByRole("button", { name: /Phone pagination fixture/ }).allTextContents();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await page.getByText("31–31 of 31", { exact: true }).waitFor();
+  const lastPhoneTicket = await page.getByRole("button", { name: /Phone pagination fixture/ }).textContent();
+  if (firstPhonePage.includes(lastPhoneTicket)) throw new Error("Ticket duplicated across inbox pages");
+  await page.getByLabel("Search tickets", { exact: true }).fill("no matching ticket");
+  await page.getByText("0 tickets", { exact: true }).waitFor();
+  await page.getByLabel("Filter channel", { exact: true }).selectOption("");
+  await page.getByLabel("Search tickets", { exact: true }).fill("Delivery update for order");
   await page.getByRole("button", { name: /Delivery update for order/ }).click();
   await page
     .getByRole("heading", {
@@ -256,6 +275,7 @@ async function main() {
     .getByRole("button", { name: "Toggle navigation", exact: true })
     .click();
   await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.getByLabel("Search tickets", { exact: true }).fill("Delivery update for order");
   await page.getByRole("button", { name: /Delivery update for order/ }).click();
   await page
     .getByRole("heading", {

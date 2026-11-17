@@ -12,7 +12,7 @@ export const priority = Joi.string().valid("Low", "Medium", "High", "Critical");
 export const filters = Joi.object({
   status: Joi.string().max(60),
   priority,
-  channel: Joi.string().valid("web", "chat", "email", "whatsapp"),
+  channel: Joi.string().valid("web", "chat", "email", "whatsapp", "phone", "instagram", "messenger"),
   assignedTo: oid,
   group: Joi.string().max(80),
   search: Joi.string().max(100),
