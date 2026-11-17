@@ -1,4 +1,10 @@
 import express from "express";
+import {
+  vectorEnabled,
+  upsertVectors,
+  queryVectors,
+  pruneVectors,
+} from "./vectorStore.js";
 import Joi from "joi";
 import rateLimit from "express-rate-limit";
 import crypto from "node:crypto";
@@ -68,9 +74,9 @@ export async function indexKnowledge(workspaceId, embedder = embed) {
     published: true,
   })
     .sort({ _id: 1 })
-    .limit(501)
+    .limit(vectorEnabled() ? 10001 : 501)
     .lean();
-  if (articles.length > 500)
+  if (articles.length > (vectorEnabled() ? 10000 : 500))
     throw fail(
       "This semantic index supports up to 500 articles; split the collection before indexing.",
       409,
@@ -81,7 +87,7 @@ export async function indexKnowledge(workspaceId, embedder = embed) {
     const content = article.title + "\n" + article.body;
     for (let i = 0; i < content.length; i += 1200)
       chunks.push(content.slice(i, i + 1600));
-    if (count + chunks.length > 2000)
+    if (count + chunks.length > (vectorEnabled() ? 100000 : 2000))
       throw fail("Semantic chunk limit reached", 409);
     const fingerprint = hash(article);
     const current = await Embedding.countDocuments({
@@ -109,22 +115,49 @@ export async function indexKnowledge(workspaceId, embedder = embed) {
       );
     }
     count += chunks.length;
+    if (vectorEnabled())
+      await upsertVectors(
+        await Embedding.find({
+          workspace: workspaceId,
+          article: article._id,
+          hash: fingerprint,
+          model: process.env.EMBEDDING_MODEL,
+        })
+          .select("+vector")
+          .lean(),
+      );
   }
   await Embedding.deleteMany({
     workspace: workspaceId,
     article: { $nin: articles.map((a) => a._id) },
   });
+  if (vectorEnabled())
+    await pruneVectors(
+      workspaceId,
+      (
+        await Embedding.find({
+          workspace: workspaceId,
+          model: process.env.EMBEDDING_MODEL,
+        })
+          .select("_id")
+          .lean()
+      ).map((r) => r._id),
+    );
   return { articles: articles.length, chunks: count };
 }
 export async function semanticSearch(workspace, question, embedder = embed) {
   requireFeature(workspace, "semantic");
   const [vector] = await embedder([question]),
+    candidates = vectorEnabled()
+      ? await queryVectors(workspace._id, process.env.EMBEDDING_MODEL, vector)
+      : null,
     rows = await Embedding.find({
       workspace: workspace._id,
       model: process.env.EMBEDDING_MODEL,
+      ...(candidates ? { _id: { $in: candidates.map((c) => c.rowId) } } : {}),
     })
       .select("+vector")
-      .limit(2001)
+      .limit(candidates ? 50 : 2001)
       .lean();
   if (rows.length > 2000)
     throw fail("Index exceeds the supported search size", 409);

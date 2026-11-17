@@ -1,4 +1,5 @@
 import express from "express";
+import { inboundTwiML } from "./voicePlus.js";
 import Joi from "joi";
 import twilio from "twilio";
 import fs from "node:fs/promises";
@@ -14,6 +15,7 @@ import {
   Message,
   Attachment,
   ChannelIdentity,
+  VoiceCall,
 } from "./models.js";
 import { encrypt, decrypt, receive, signatureOK } from "./connectors.js";
 import {
@@ -259,6 +261,18 @@ channelAdmin.post(
     const input = validate(
         Joi.object({
           template: Joi.object({
+            header: Joi.string().max(1000),
+            buttons: Joi.array()
+              .items(
+                Joi.object({
+                  index: Joi.number().integer().min(0).max(9).required(),
+                  type: Joi.string().valid("url", "quick_reply").required(),
+                  value: Joi.string().max(1000).required(),
+                }),
+              )
+              .max(10)
+              .unique("index")
+              .default([]),
             name: Joi.string()
               .pattern(/^[a-z0-9_]{1,512}$/)
               .required(),
@@ -293,6 +307,8 @@ channelAdmin.post(
         internal: false,
       }).select("+storageKey");
       if (!file) throw fail("Public scanned attachment not found", 404);
+      if (file.mime === "audio/wav")
+        throw fail("Convert WAV to MP3 or OGG before sending through WhatsApp");
       const content = await fs.readFile(
           path.join(
             path.resolve(process.env.PRIVATE_UPLOAD_DIR || "./private-uploads"),
@@ -387,7 +403,7 @@ voiceRoutes.post(
       !/^CA[a-f0-9]{32}$/i.test(req.body.CallSid || "")
     )
       throw fail("Invalid call payload");
-    await receive(connector, {
+    const received = await receive(connector, {
       messageId: req.body.CallSid,
       threadId: phone,
       email: `phone-${phone}@phone.invalid`,
@@ -395,10 +411,22 @@ voiceRoutes.post(
       subject: "Phone support request",
       description: "Incoming phone call received.",
     });
-    const response = new twilio.twiml.VoiceResponse();
-    response.say("Connecting you to the support team.");
-    response.dial(connector.config.forwardTo);
-    res.type("text/xml").send(response.toString());
+    if (received.ticket)
+      await VoiceCall.updateOne(
+        { callSid: req.body.CallSid },
+        {
+          $setOnInsert: {
+            workspace: workspace._id,
+            ticket: received.ticket,
+            connector: connector._id,
+            direction: "inbound",
+            status: "ringing",
+            recordingConsent: !!connector.config.voice?.recordCalls,
+          },
+        },
+        { upsert: true },
+      );
+    res.type("text/xml").send(inboundTwiML(connector, req.body.Digits));
   }),
 );
 export const socialRoutes = express.Router();

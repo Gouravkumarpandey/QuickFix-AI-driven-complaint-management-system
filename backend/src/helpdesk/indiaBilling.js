@@ -57,7 +57,7 @@ export function amounts(net, rate, sellerState, buyerState) {
     igst: local ? 0 : tax,
   };
 }
-export async function applyPayment(order, payment) {
+export async function applyPayment(order, payment, grant = {}) {
   if (
     payment.order_id !== order.orderId ||
     payment.status !== "captured" ||
@@ -68,6 +68,16 @@ export async function applyPayment(order, payment) {
   return inWorkspace(order.workspace, async (session, workspace) => {
     const row = await BillingOrder.findById(order._id).session(session);
     if (row.applied) return row;
+    if (
+      grant.subscriptionId &&
+      workspace.billing.subscriptionId &&
+      workspace.billing.subscriptionId !== grant.subscriptionId &&
+      workspace.billing.expiresAt > new Date()
+    )
+      throw fail(
+        "Another paid entitlement requires billing reconciliation",
+        409,
+      );
     if (
       workspace.billing.subscriptionId &&
       !workspace.billing.subscriptionId.startsWith("razorpay:") &&
@@ -82,7 +92,7 @@ export async function applyPayment(order, payment) {
         Date.now(),
         workspace.billing.expiresAt?.getTime() || 0,
       ),
-      expiresAt = new Date(start + 30 * 86400000);
+      expiresAt = grant.expiresAt || new Date(start + 30 * 86400000);
     const today = new Date(),
       year = Number(
         new Intl.DateTimeFormat("en", {
@@ -113,14 +123,22 @@ export async function applyPayment(order, payment) {
     row.expiresAt = expiresAt;
     row.applied = true;
     await row.save({ session });
-    workspace.billing = {
-      plan: row.plan,
-      seats: row.seats,
-      provider: "razorpay",
-      subscriptionId: "razorpay:" + payment.id,
-      expiresAt,
-      status: "active",
-    };
+    if (
+      !(
+        grant.subscriptionId &&
+        workspace.billing.subscriptionId === grant.subscriptionId &&
+        workspace.billing.expiresAt >= expiresAt
+      )
+    )
+      workspace.billing = {
+        plan: row.plan,
+        seats: row.seats,
+        provider: "razorpay",
+        paymentId: payment.id,
+        subscriptionId: grant.subscriptionId || "razorpay:" + payment.id,
+        expiresAt,
+        status: "active",
+      };
     await workspace.save({ session });
     await reconcileSeats(workspace, session);
     await audit(workspace._id, "razorpay", "billing.paid", row._id, session, {
@@ -139,11 +157,15 @@ razorpayWebhook.post(
     if (!secureHex(secret, req.body, req.get("X-Razorpay-Signature")))
       throw fail("Invalid signature", 401);
     const event = JSON.parse(req.body.toString());
+    if (event.event?.startsWith("subscription.")) {
+      const { recurringEvent } = await import("./recurring.js");
+      await recurringEvent(event);
+    }
     if (["payment.captured", "order.paid"].includes(event.event)) {
       const payment = event.payload?.payment?.entity;
       if (payment?.order_id) {
         const order = await BillingOrder.findOne({ orderId: payment.order_id });
-        if (order)
+        if (order && !order.recurringId)
           await applyPayment(
             order,
             await razorpay("payments/" + encodeURIComponent(payment.id)),
@@ -157,7 +179,16 @@ razorpayWebhook.post(
             paymentId: refund.payment_id,
             status: "paid",
           }));
-      if (order && refund.amount === order.total) {
+      const currentPayment = order
+        ? await razorpay("payments/" + encodeURIComponent(order.paymentId))
+        : null;
+      if (
+        order &&
+        currentPayment.id === order.paymentId &&
+        currentPayment.amount === order.total &&
+        currentPayment.currency === "INR" &&
+        currentPayment.amount_refunded >= order.total
+      ) {
         await inWorkspace(order.workspace, async (session, workspace) => {
           await BillingOrder.updateOne(
             { _id: order._id, status: "paid" },
@@ -166,7 +197,8 @@ razorpayWebhook.post(
           );
           if (
             workspace.billing.subscriptionId ===
-            "razorpay:" + order.paymentId
+              "razorpay:" + order.paymentId ||
+            workspace.billing.paymentId === order.paymentId
           ) {
             workspace.billing = { plan: "Free", seats: 2, status: "refunded" };
             await workspace.save({ session });

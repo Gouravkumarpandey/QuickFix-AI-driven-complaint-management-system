@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { cleanHTML } from "./richText.js";
+import { replyTransport } from "./mailAuth.js";
+import path from "node:path";
 import { indexKnowledge } from "./semantic.js";
 import { receiveWhatsAppMedia } from "./omnichannel.js";
 import { sendWebhook } from "./webhooks.js";
@@ -10,14 +13,28 @@ import {
   Message,
   Contact,
   Workspace,
+  Attachment,
 } from "./models.js";
 import { decrypt } from "./connectors.js";
 import { inWorkspace, audit } from "./access.js";
 import { runAutomations, ticketEvent, digest } from "./tickets.js";
+export const mediaType = (mime) =>
+  mime === "application/pdf"
+    ? "document"
+    : mime?.startsWith("audio/")
+      ? "audio"
+      : mime?.startsWith("video/")
+        ? "video"
+        : "image";
 export async function deliver(
   job,
   { fetcher = fetch, mailer, webhookSender = sendWebhook } = {},
 ) {
+  if (job.kind === "ai.evaluate") {
+    const { runBenchmark } = await import("./evaluation.js");
+    await runBenchmark(job.payload.id);
+    return;
+  }
   if (job.kind === "ai.index") {
     await indexKnowledge(job.workspace);
     return;
@@ -138,26 +155,57 @@ export async function deliver(
             template: {
               name: payload.template.name,
               language: { code: payload.template.language },
-              ...(payload.template.parameters.length
+              ...(payload.template.parameters.length ||
+              payload.template.header ||
+              payload.template.buttons?.length
                 ? {
                     components: [
-                      {
-                        type: "body",
-                        parameters: payload.template.parameters.map((text) => ({
-                          type: "text",
-                          text,
-                        })),
-                      },
+                      ...(payload.template.header
+                        ? [
+                            {
+                              type: "header",
+                              parameters: [
+                                { type: "text", text: payload.template.header },
+                              ],
+                            },
+                          ]
+                        : []),
+                      ...(payload.template.parameters.length
+                        ? [
+                            {
+                              type: "body",
+                              parameters: payload.template.parameters.map(
+                                (text) => ({
+                                  type: "text",
+                                  text,
+                                }),
+                              ),
+                            },
+                          ]
+                        : []),
+                      ...(payload.template.buttons || []).map((b) => ({
+                        type: "button",
+                        sub_type: b.type,
+                        index: String(b.index),
+                        parameters: [
+                          {
+                            type: b.type === "url" ? "text" : "payload",
+                            [b.type === "url" ? "text" : "payload"]: b.value,
+                          },
+                        ],
+                      })),
                     ],
                   }
                 : {}),
             },
           }
         : {
-            type: payload.mime === "application/pdf" ? "document" : "image",
-            [payload.mime === "application/pdf" ? "document" : "image"]: {
+            type: mediaType(payload.mime),
+            [mediaType(payload.mime)]: {
               id: payload.mediaId,
-              caption: payload.caption,
+              ...(mediaType(payload.mime) !== "audio"
+                ? { caption: payload.caption }
+                : {}),
               ...(payload.mime === "application/pdf"
                 ? { filename: payload.filename }
                 : {}),
@@ -208,27 +256,35 @@ export async function deliver(
         "Social reply failed; check provider approval and messaging window",
       );
   } else if (connector.kind === "email") {
+    let from = process.env.EMAIL_USER;
     if (!mailer) {
-      if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS)
-        throw new Error("SMTP is not configured");
-      mailer = nodemailer.createTransport({
-        host: process.env.SMTP_HOST || "smtp.gmail.com",
-        port: Number(process.env.SMTP_PORT || 587),
-        secure: Number(process.env.SMTP_PORT || 587) === 465,
-        requireTLS: true,
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 30000,
-        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-      });
+      const transport = await replyTransport(connector);
+      mailer = transport.mailer;
+      from = transport.user;
     }
     await mailer.sendMail({
-      from: process.env.EMAIL_USER,
+      from,
       to: contact.email,
       replyTo: connector.config.fromAddress || process.env.EMAIL_USER,
       subject: `Re: [${ticket.number}] ${ticket.subject}`,
       text: message.text,
-      messageId: `<quickfix-${message._id}@${(process.env.EMAIL_USER || "support@quickfix.local").split("@")[1]}>`,
+      ...(message.html ? { html: cleanHTML(message.html) } : {}),
+      attachments: (
+        await Attachment.find({
+          _id: { $in: message.attachments || [] },
+          workspace: job.workspace,
+          ticket: ticket._id,
+          internal: false,
+        }).select("+storageKey")
+      ).map((file) => ({
+        filename: file.name,
+        contentType: file.mime,
+        path: path.join(
+          path.resolve(process.env.PRIVATE_UPLOAD_DIR || "./private-uploads"),
+          file.storageKey,
+        ),
+      })),
+      messageId: `<quickfix-${message._id}@${(from || "support@quickfix.local").split("@")[1]}>`,
       headers: {
         "X-QuickFix-Thread": ticket.externalThread || String(ticket._id),
       },

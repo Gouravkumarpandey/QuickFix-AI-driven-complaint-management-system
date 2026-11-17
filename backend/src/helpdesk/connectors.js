@@ -60,7 +60,13 @@ connectorRoutes.get(
   "/:workspaceId/connectors",
   permit("owner", "admin"),
   wrap(async (req, res) =>
-    res.json(await Connector.find({ workspace: req.workspace._id }).lean()),
+    res.json(
+      await Connector.find({ workspace: req.workspace._id })
+        .select(
+          "-config.oauth.refreshToken -config.oauth.accessToken -config.voice.apiKeySecret",
+        )
+        .lean(),
+    ),
   ),
 );
 connectorRoutes.post(
@@ -308,7 +314,12 @@ channelRoutes.post(
         )
           continue;
         for (const message of value.messages || []) {
-          if (!["text", "image", "document"].includes(message.type)) continue;
+          if (
+            !["text", "image", "document", "audio", "video"].includes(
+              message.type,
+            )
+          )
+            continue;
           const phone = String(message.from);
           if (!/^\d{8,15}$/.test(phone)) continue;
           await receive(connector, {
