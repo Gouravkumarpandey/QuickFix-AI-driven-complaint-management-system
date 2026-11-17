@@ -133,7 +133,7 @@ export async function autoAssign(workspace, ticket, session) {
     active: true,
     online: true,
     role: { $in: ["owner", "admin", "agent"] },
-    groups: ticket.group,
+    $or: [{ groups: ticket.group }, { scimGroups: ticket.group }],
   })
     .sort({ createdAt: 1 })
     .session(session);

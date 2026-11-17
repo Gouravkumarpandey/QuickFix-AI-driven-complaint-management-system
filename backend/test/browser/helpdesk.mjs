@@ -30,9 +30,8 @@ async function main() {
   process.env.INTEGRATION_ENCRYPTION_KEY = "5".repeat(64);
   await mongoose.connect(process.env.MONGODB_URI);
   const { User } = await import("../../src/models/User.js");
-  const { Workspace, Membership, Article, Resource, Ticket } = await import(
-    "../../src/helpdesk/models.js"
-  );
+  const { Workspace, Membership, Article, Resource, Ticket } =
+    await import("../../src/helpdesk/models.js");
   const { inWorkspace } = await import("../../src/helpdesk/access.js");
   const { createTicket } = await import("../../src/helpdesk/tickets.js");
   await Promise.all(
@@ -155,9 +154,8 @@ async function main() {
   });
   await import("../../src/server.js");
   process.chdir(new URL("../../../frontend", import.meta.url).pathname);
-  const { createServer } = await import(
-    "../../../frontend/node_modules/vite/dist/node/index.js"
-  );
+  const { createServer } =
+    await import("../../../frontend/node_modules/vite/dist/node/index.js");
   const vite = await createServer({
     root: new URL("../../../frontend", import.meta.url).pathname,
     server: { port: 5175, host: "127.0.0.1" },
@@ -310,6 +308,23 @@ async function main() {
       .getByRole("button", { name: section, exact: true })
       .click();
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    if (section === "Calling") {
+      await page
+        .getByRole("checkbox", {
+          name: "Route incoming calls to available browser agents",
+        })
+        .check();
+      await page
+        .getByRole("checkbox", { name: "Transcribe live conversations" })
+        .check();
+    }
+    if (section === "Accounting")
+      await page
+        .getByRole("heading", {
+          name: "GST e-invoice registration",
+          exact: true,
+        })
+        .waitFor();
   }
   await page.screenshot({
     path: "/tmp/quickfix-advanced-setup.png",

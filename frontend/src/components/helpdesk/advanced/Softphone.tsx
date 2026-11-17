@@ -10,6 +10,7 @@ interface Record {
   recordingSid?: string;
   transcription?: string;
   createdAt: string;
+  transcript?: { _id: string; text: string; track: string }[];
 }
 export default function Softphone({
   base,
@@ -26,11 +27,24 @@ export default function Softphone({
     [muted, setMuted] = useState(false),
     [records, setRecords] = useState<Record[]>([]),
     [busy, setBusy] = useState(false);
-  const load = async () =>
-    setRecords((await api.get(`${base}/tickets/${ticketId}/calls`)).data);
+  const load = async () => {
+    const { data } = await api.get<Record[]>(
+      `${base}/tickets/${ticketId}/calls`,
+    );
+    await Promise.all(
+      data.map(async (r) => {
+        r.transcript = (
+          await api.get(`${base}/tickets/${ticketId}/calls/${r._id}/transcript`)
+        ).data;
+      }),
+    );
+    setRecords(data);
+  };
   useEffect(() => {
     void load().catch(() => {});
+    const timer = setInterval(() => void load().catch(() => {}), 5000);
     return () => {
+      clearInterval(timer);
       active.current?.disconnect();
       device.current?.destroy();
     };
@@ -153,6 +167,24 @@ export default function Softphone({
             <p className="whitespace-pre-wrap">
               Voicemail transcript: {r.transcription}
             </p>
+          )}
+          {!!r.transcript?.length && (
+            <div
+              className="space-y-1"
+              aria-label="Live conversation transcript"
+            >
+              {r.transcript.map((u) => (
+                <p key={u._id}>
+                  <span className="text-slate-500">
+                    {u.track === "inbound_track"
+                      ? "Incoming audio"
+                      : "Outgoing audio"}
+                    :
+                  </span>{" "}
+                  {u.text}
+                </p>
+              ))}
+            </div>
           )}
           {r.recordingSid && (
             <button

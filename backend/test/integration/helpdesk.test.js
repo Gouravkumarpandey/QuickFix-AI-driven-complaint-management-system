@@ -1,3 +1,11 @@
+import eInvoiceRoutes from "../../src/helpdesk/einvoicing.js";
+import { voiceDeskAdmin } from "../../src/helpdesk/voiceDesk.js";
+import {
+  VoiceDesk,
+  VoiceUtterance,
+  ProvisionGroup,
+  EInvoiceSubmission,
+} from "../../src/helpdesk/models.js";
 import analyticsEnterprise from "../../src/helpdesk/analytics.js";
 import productivity from "../../src/helpdesk/productivity.js";
 import { voiceAdmin, voicePublic } from "../../src/helpdesk/voicePlus.js";
@@ -180,6 +188,8 @@ before(async () => {
     routes,
     productivity,
     voiceAdmin,
+    voiceDeskAdmin,
+    eInvoiceRoutes,
     scimAdmin,
     samlAdmin,
     whatsappPlus,
@@ -1756,6 +1766,108 @@ test("WhatsApp templates use the durable outbox and private attachments cannot b
     ).status,
     404,
   );
+  assert.equal(
+    (
+      await call(
+        alice,
+        `/workspaces/${a._id}/tickets/${ticket._id}/whatsapp`,
+        "POST",
+        {
+          template: {
+            name: "approved_media",
+            language: "en",
+            headerAttachmentId: String(file._id),
+          },
+        },
+      )
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        alice,
+        `/workspaces/${a._id}/tickets/${ticket._id}/whatsapp`,
+        "POST",
+        {
+          template: {
+            name: "approved_media",
+            language: "en",
+            header: "text",
+            headerAttachmentId: String(file._id),
+          },
+        },
+      )
+    ).status,
+    400,
+  );
+  const fs = await import("node:fs/promises"),
+    os = await import("node:os"),
+    path = await import("node:path");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "quickfix-wa-")),
+    previous = process.env.PRIVATE_UPLOAD_DIR,
+    original = globalThis.fetch;
+  process.env.PRIVATE_UPLOAD_DIR = dir;
+  try {
+    await fs.writeFile(
+      path.join(dir, "header-fixture"),
+      Buffer.from("scanned fixture"),
+    );
+    const publicFile = await Attachment.create({
+      workspace: a._id,
+      ticket: ticket._id,
+      name: "guide.pdf",
+      mime: "application/pdf",
+      size: 15,
+      internal: false,
+      storageKey: "header-fixture",
+      uploadedBy: alice._id,
+    });
+    globalThis.fetch = async (url, options) =>
+      String(url).startsWith("https://graph.facebook.com/")
+        ? Response.json({ id: "987654321" })
+        : original(url, options);
+    await body(
+      await call(
+        alice,
+        `/workspaces/${a._id}/tickets/${ticket._id}/whatsapp`,
+        "POST",
+        {
+          template: {
+            name: "approved_media",
+            language: "en",
+            headerAttachmentId: String(publicFile._id),
+          },
+        },
+      ),
+    );
+    globalThis.fetch = original;
+    let sent = false;
+    await drainJobs(
+      {
+        fetcher: async (url, options) => {
+          const payload = JSON.parse(options.body);
+          assert.equal(
+            payload.template.components[0].parameters[0].type,
+            "document",
+          );
+          assert.deepEqual(
+            payload.template.components[0].parameters[0].document,
+            { id: "987654321", filename: "guide.pdf" },
+          );
+          sent = true;
+          return { ok: true };
+        },
+      },
+      10,
+    );
+    assert.equal(sent, true);
+  } finally {
+    globalThis.fetch = original;
+    if (previous) process.env.PRIVATE_UPLOAD_DIR = previous;
+    else delete process.env.PRIVATE_UPLOAD_DIR;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("custom roles enforce normalized workspace IDs and root settings writes", async () => {
@@ -2607,4 +2719,313 @@ test("cumulative Razorpay refunds revoke only the currently paid recurring entit
       else process.env[k] = v;
     }
   }
+});
+test("SCIM group CRUD scopes member references and preserves manual routing groups", async () => {
+  await upgrade(a);
+  await upgrade(b);
+  const key = await body(
+    await call(alice, `/workspaces/${a._id}/security/scim-token`, "POST", {}),
+  );
+  const scim = (path, method = "GET", value) =>
+    fetch(base + `/scim/${a._id}/v2` + path, {
+      method,
+      headers: {
+        Authorization: "Bearer " + key.token,
+        "Content-Type": "application/scim+json",
+      },
+      ...(value ? { body: JSON.stringify(value) } : {}),
+    });
+  const user = await body(
+    await scim("/Users", "POST", {
+      schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"],
+      externalId: "group-agent",
+      userName: "groups@example.com",
+      displayName: "Group Agent",
+    }),
+  );
+  const binding = await ProvisionUser.findById(user.id);
+  const group = await body(
+    await scim("/Groups", "POST", {
+      schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+      displayName: "Delivery",
+      externalId: "idp-delivery",
+      members: [{ value: user.id }],
+    }),
+  );
+  let member = await Membership.findById(binding.member);
+  assert.deepEqual([...member.groups], ["General"]);
+  assert.deepEqual([...member.scimGroups], ["Delivery"]);
+  assert.equal(member.role, "agent");
+  assert.equal((await body(await scim("/ResourceTypes"))).totalResults, 2);
+  assert.equal(
+    (
+      await body(
+        await scim(
+          "/Groups?filter=" +
+            encodeURIComponent('externalId eq "idp-delivery"'),
+        ),
+      )
+    ).totalResults,
+    1,
+  );
+  assert.equal(
+    (
+      await scim("/Groups", "POST", {
+        schemas: [],
+        displayName: "Invalid",
+        members: [{ value: String(new mongoose.Types.ObjectId()) }],
+      })
+    ).status,
+    400,
+  );
+  const patch = (value) =>
+    scim("/Groups/" + group.id, "PATCH", {
+      schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      Operations: value,
+    });
+  await body(
+    await patch([{ op: "Replace", path: "displayName", value: "Returns" }]),
+  );
+  assert.deepEqual(
+    [...(await Membership.findById(binding.member)).scimGroups],
+    ["Returns"],
+  );
+  await body(
+    await patch([{ op: "Remove", path: `members[value eq "${user.id}"]` }]),
+  );
+  assert.deepEqual(
+    [...(await Membership.findById(binding.member)).scimGroups],
+    [],
+  );
+  await body(
+    await patch([
+      {
+        op: "Add",
+        path: "members",
+        value: [{ value: user.id }, { value: user.id }],
+      },
+    ]),
+  );
+  assert.equal((await ProvisionGroup.findById(group.id)).members.length, 1);
+  assert.equal((await scim("/Groups/" + group.id, "DELETE")).status, 204);
+  member = await Membership.findById(binding.member);
+  assert.deepEqual([...member.scimGroups], []);
+  assert.deepEqual([...member.groups], ["General"]);
+  assert.equal(
+    (
+      await fetch(base + `/scim/${b._id}/v2/Groups`, {
+        headers: { Authorization: "Bearer " + key.token },
+      })
+    ).status,
+    401,
+  );
+});
+test("browser phone leases route signed inbound calls and final transcripts remain private and deduplicated", async () => {
+  await upgrade(a);
+  const c = await body(
+    await call(alice, `/workspaces/${a._id}/channels`, "POST", {
+      kind: "phone",
+      name: "Desk",
+      assetId: "AC" + "a".repeat(32),
+      token: "fixture-auth",
+      secret: "fixture-auth",
+      phoneNumber: "+919000000001",
+      forwardTo: "+919000000002",
+    }),
+  );
+  await body(
+    await call(alice, `/workspaces/${a._id}/connectors/${c.id}/voice`, "PUT", {
+      apiKeySid: "SK" + "b".repeat(32),
+      apiKeySecret: "fixture-secret",
+      appSid: "AP" + "c".repeat(32),
+      browserInbound: true,
+      liveTranscription: true,
+      recordingNotice: "This conversation is transcribed for customer support.",
+    }),
+  );
+  const lease = await body(
+    await call(alice, `/workspaces/${a._id}/voice/desk`, "POST", {}),
+  );
+  const decoded = jwt.decode(lease.token);
+  assert.equal(decoded.grants.voice.incoming.allow, true);
+  assert.equal(decoded.grants.voice.outgoing, undefined);
+  assert.equal(
+    (await call(alice, `/workspaces/${a._id}/voice/desk`, "POST", {})).status,
+    409,
+  );
+  await body(
+    await call(alice, `/workspaces/${a._id}/voice/desk`, "POST", {
+      sessionId: lease.sessionId,
+    }),
+  );
+  const prev = process.env.BACKEND_URL;
+  process.env.BACKEND_URL = base;
+  const sid = "CA" + "d".repeat(32),
+    account = "AC" + "a".repeat(32);
+  const signed = (path, params) => {
+    const url = base + path;
+    return fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Twilio-Signature": twilio.getExpectedTwilioSignature(
+          "fixture-auth",
+          url,
+          params,
+        ),
+      },
+      body: new URLSearchParams(params),
+    });
+  };
+  try {
+    const response = await signed("/voice/" + c.id, {
+      AccountSid: account,
+      CallSid: sid,
+      From: "+919000000003",
+      To: "+919000000001",
+    });
+    assert.equal(response.status, 200);
+    const xml = await response.text();
+    assert.ok(xml.includes("<Client"));
+    assert.ok(xml.includes(lease.identity));
+    assert.ok(xml.includes("<Transcription"));
+    assert.ok(xml.includes("ticketId"));
+    const record = await VoiceCall.findOne({ callSid: sid });
+    assert.ok(record.deskMember);
+    assert.equal(record.transcriptionEnabled, true);
+    const params = {
+      AccountSid: account,
+      CallSid: sid,
+      TranscriptionSid: "GT" + "e".repeat(32),
+      TranscriptionEvent: "transcription-content",
+      Final: "true",
+      SequenceId: "1",
+      Track: "inbound_track",
+      TranscriptionData: JSON.stringify({
+        transcript: "Where is my order?",
+        confidence: 0.99,
+      }),
+    };
+    assert.equal(
+      (await signed("/voice-plus/" + c.id + "/live-transcription", params))
+        .status,
+      204,
+    );
+    assert.equal(
+      (await signed("/voice-plus/" + c.id + "/live-transcription", params))
+        .status,
+      204,
+    );
+    assert.equal(await VoiceUtterance.countDocuments({ call: record._id }), 1);
+    await signed("/voice-plus/" + c.id + "/live-transcription", {
+      ...params,
+      Final: "false",
+      SequenceId: "2",
+    });
+    assert.equal(await VoiceUtterance.countDocuments({ call: record._id }), 1);
+    const path = `/workspaces/${a._id}/tickets/${record.ticket}/calls/${record._id}/transcript`;
+    assert.equal(
+      (await body(await call(alice, path)))[0].text,
+      "Where is my order?",
+    );
+    assert.equal((await call(bob, path)).status, 404);
+    assert.equal(
+      (
+        await fetch(base + "/voice-plus/" + c.id + "/live-transcription", {
+          method: "POST",
+          body: new URLSearchParams(params),
+        })
+      ).status,
+      401,
+    );
+    await signed("/voice-plus/" + c.id + "/desk-status?call=" + sid, {
+      AccountSid: account,
+      CallSid: "CA" + "f".repeat(32),
+      CallStatus: "completed",
+    });
+    assert.equal(
+      (await VoiceDesk.findOne({ workspace: a._id })).currentCall,
+      undefined,
+    );
+    assert.equal(
+      (
+        await call(alice, `/workspaces/${a._id}/voice/desk`, "DELETE", {
+          sessionId: lease.sessionId,
+        })
+      ).status,
+      204,
+    );
+  } finally {
+    if (prev) process.env.BACKEND_URL = prev;
+    else delete process.env.BACKEND_URL;
+  }
+});
+test("e-invoice preparation binds immutable totals and environment while missing credentials never mark it submitted", async () => {
+  const invoice = await BillingOrder.create({
+    workspace: a._id,
+    orderId: "order_einvoice",
+    receipt: "einvoice",
+    invoiceNumber: "QF2627/123456",
+    status: "paid",
+    paidAt: new Date(),
+    currency: "INR",
+    plan: "Pro",
+    net: 10000,
+    cgst: 900,
+    sgst: 900,
+    igst: 0,
+    total: 11800,
+    taxRate: 1800,
+    seller: {
+      gstin: "20AAAAA0000A1Z5",
+      stateCode: "20",
+      sac: "998314",
+      name: "QuickFix",
+      address: "Jamshedpur Main Road",
+    },
+    customer: {
+      gstin: "20BBBBB0000B1Z5",
+      stateCode: "20",
+      name: "Buyer Pvt Ltd",
+      address: "Adityapur Main Road",
+    },
+  });
+  const input = {
+    seller: { city: "Jamshedpur", pin: 831001 },
+    buyer: { city: "Adityapur", pin: 832109 },
+    accountingReviewed: true,
+  };
+  const path = `/workspaces/${a._id}/billing/einvoices`;
+  const row = await body(
+    await call(alice, path + "/" + invoice._id + "/prepare", "POST", input),
+  );
+  assert.equal(row.state, "prepared");
+  assert.equal(row.payload.ValDtls.TotInvVal, 118);
+  assert.equal(row.payload.ItemList[0].GstRt, 18);
+  assert.equal(row.payload.DocDtls.No, invoice.invoiceNumber);
+  assert.equal(
+    (await call(bob, path + "/" + invoice._id + "/prepare", "POST", input))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(alice, path + "/" + row._id + "/submit", "POST", {
+        payloadHash: row.payloadHash,
+        environment: row.environment,
+        accountingReviewed: true,
+      })
+    ).status,
+    503,
+  );
+  assert.equal((await EInvoiceSubmission.findById(row._id)).state, "prepared");
+  await EInvoiceSubmission.updateOne(
+    { _id: row._id },
+    { $set: { state: "outcome-unknown" } },
+  );
+  assert.equal(
+    (await call(alice, path + "/" + invoice._id + "/prepare", "POST", input))
+      .status,
+    409,
+  );
 });

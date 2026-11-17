@@ -1,4 +1,5 @@
 import express from "express";
+import { reserveBrowser } from "./voiceDesk.js";
 import { inboundTwiML } from "./voicePlus.js";
 import Joi from "joi";
 import twilio from "twilio";
@@ -262,6 +263,7 @@ channelAdmin.post(
         Joi.object({
           template: Joi.object({
             header: Joi.string().max(1000),
+            headerAttachmentId: Joi.string().hex().length(24),
             buttons: Joi.array()
               .items(
                 Joi.object({
@@ -283,7 +285,7 @@ channelAdmin.post(
               .items(Joi.string().max(1000))
               .max(10)
               .default([]),
-          }),
+          }).without("header", "headerAttachmentId"),
           attachmentId: Joi.string().hex().length(24),
           caption: Joi.string().max(1000).default(""),
         }).xor("template", "attachmentId"),
@@ -299,14 +301,25 @@ channelAdmin.post(
     if (!connector)
       throw fail("This ticket is not a WhatsApp conversation", 409);
     let mediaId, mime, name;
-    if (input.attachmentId) {
+    const attachmentId =
+      input.attachmentId || input.template?.headerAttachmentId;
+    if (attachmentId) {
       const file = await Attachment.findOne({
-        _id: objectId(input.attachmentId),
+        _id: objectId(attachmentId),
         workspace: req.workspace._id,
         ticket: ticket._id,
         internal: false,
       }).select("+storageKey");
       if (!file) throw fail("Public scanned attachment not found", 404);
+      if (
+        input.template &&
+        !["image/png", "image/jpeg", "application/pdf", "video/mp4"].includes(
+          file.mime,
+        )
+      )
+        throw fail(
+          "Template headers support images, PDF documents and MP4 video",
+        );
       if (file.mime === "audio/wav")
         throw fail("Convert WAV to MP3 or OGG before sending through WhatsApp");
       const content = await fs.readFile(
@@ -343,9 +356,7 @@ channelAdmin.post(
             text: input.template
               ? `Template: ${input.template.name}`
               : input.caption || "Attachment",
-            attachments: input.attachmentId
-              ? [objectId(input.attachmentId)]
-              : [],
+            attachments: attachmentId ? [objectId(attachmentId)] : [],
           },
           req.user._id,
           "agent",
@@ -356,7 +367,24 @@ channelAdmin.post(
         {
           $set: {
             kind: "whatsapp.structured",
-            "payload.template": input.template,
+            "payload.template": input.template
+              ? {
+                  ...input.template,
+                  ...(input.template.headerAttachmentId
+                    ? {
+                        headerMedia: {
+                          type: mime.startsWith("image/")
+                            ? "image"
+                            : mime === "video/mp4"
+                              ? "video"
+                              : "document",
+                          id: mediaId,
+                          filename: name,
+                        },
+                      }
+                    : {}),
+                }
+              : undefined,
             "payload.mediaId": mediaId,
             "payload.mime": mime,
             "payload.filename": name,
@@ -422,11 +450,40 @@ voiceRoutes.post(
             direction: "inbound",
             status: "ringing",
             recordingConsent: !!connector.config.voice?.recordCalls,
+            transcriptionEnabled: !!connector.config.voice?.liveTranscription,
           },
         },
         { upsert: true },
       );
-    res.type("text/xml").send(inboundTwiML(connector, req.body.Digits));
+    const call = await VoiceCall.findOne({
+      workspace: workspace._id,
+      connector: connector._id,
+      callSid: req.body.CallSid,
+    });
+    const cfg = connector.config.voice || {},
+      route = cfg.ivr?.routes?.find((r) => r.digit === req.body.Digits);
+    const ready = !cfg.ivr?.routes?.length || !!route;
+    const browser =
+      call && ready
+        ? await reserveBrowser(
+            connector,
+            call.ticket,
+            call.callSid,
+            route?.label,
+            route?.destination,
+          )
+        : null;
+    res
+      .type("text/xml")
+      .send(
+        inboundTwiML(
+          connector,
+          req.body.Digits,
+          browser
+            ? { ...browser, callSid: call.callSid, ticket: call.ticket }
+            : null,
+        ),
+      );
   }),
 );
 export const socialRoutes = express.Router();

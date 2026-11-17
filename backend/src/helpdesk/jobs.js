@@ -156,10 +156,34 @@ export async function deliver(
               name: payload.template.name,
               language: { code: payload.template.language },
               ...(payload.template.parameters.length ||
+              payload.template.headerMedia ||
               payload.template.header ||
               payload.template.buttons?.length
                 ? {
                     components: [
+                      ...(payload.template.headerMedia
+                        ? [
+                            {
+                              type: "header",
+                              parameters: [
+                                {
+                                  type: payload.template.headerMedia.type,
+                                  [payload.template.headerMedia.type]: {
+                                    id: payload.template.headerMedia.id,
+                                    ...(payload.template.headerMedia.type ===
+                                    "document"
+                                      ? {
+                                          filename:
+                                            payload.template.headerMedia
+                                              .filename,
+                                        }
+                                      : {}),
+                                  },
+                                },
+                              ],
+                            },
+                          ]
+                        : []),
                       ...(payload.template.header
                         ? [
                             {

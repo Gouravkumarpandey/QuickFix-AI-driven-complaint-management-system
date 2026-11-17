@@ -25,6 +25,7 @@ import {
 import { requireFeature } from "./entitlements.js";
 import { digest } from "./tickets.js";
 import { fail, validate } from "./validation.js";
+import { scimGroups } from "./scimGroups.js";
 const schemaURI = "urn:ietf:params:scim:schemas:core:2.0:User";
 const base = (w) =>
   `${new URL(process.env.BACKEND_URL || "http://localhost:5000").origin}/api/scim/${w}/v2`;
@@ -141,8 +142,15 @@ scimRoutes.get("/:workspaceId/v2/ServiceProviderConfig", (req, res) =>
 scimRoutes.get("/:workspaceId/v2/ResourceTypes", (req, res) =>
   res.json({
     schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-    totalResults: 1,
+    totalResults: 2,
     Resources: [
+      {
+        schemas: ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+        id: "Group",
+        name: "Group",
+        endpoint: "/Groups",
+        schema: "urn:ietf:params:scim:schemas:core:2.0:Group",
+      },
       {
         schemas: ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
         id: "User",
@@ -423,6 +431,7 @@ scimRoutes.delete(
     res.sendStatus(204);
   }),
 );
+scimRoutes.use("/:workspaceId/v2/Groups", scimGroups);
 scimRoutes.use((error, req, res, next) => {
   const status = error.code === 11000 ? 409 : error.statusCode || 400;
   res

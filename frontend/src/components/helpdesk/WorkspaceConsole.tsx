@@ -156,6 +156,7 @@ const errorText = (error: unknown) => {
 };
 const date = (value?: string) =>
   value ? new Date(value).toLocaleString() : "—";
+import BrowserDeskPhone from "./advanced/BrowserDeskPhone";
 export function WorkspaceConsole() {
   const { user } = useAuth();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]),
@@ -163,6 +164,7 @@ export function WorkspaceConsole() {
     [workspace, setWorkspace] = useState<Workspace | null>(null),
     [member, setMember] = useState<Member | null>(null),
     [tab, setTab] = useState("Dashboard"),
+    [voiceTicket, setVoiceTicket] = useState(""),
     [queue, setQueue] = useState(""),
     [navOpen, setNavOpen] = useState(false),
     [error, setError] = useState(""),
@@ -200,6 +202,7 @@ export function WorkspaceConsole() {
   }, [refresh, run]);
   useEffect(() => {
     let active = true;
+    setVoiceTicket("");
     setWorkspace(null);
     setMember(null);
     setQueue("");
@@ -316,6 +319,19 @@ export function WorkspaceConsole() {
         </div>
       )}
       <main className="lg:ml-60 min-w-0 p-4 md:p-7">
+        {workspace &&
+          member &&
+          ["owner", "admin", "agent"].includes(member.role) && (
+            <BrowserDeskPhone
+              key={workspace._id}
+              workspaceId={workspace._id}
+              onOpen={(id) => {
+                setVoiceTicket(id);
+                setQueue("");
+                setTab("Inbox");
+              }}
+            />
+          )}
         {invite && (
           <section className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4">
             <h2 className="font-semibold">You have a workspace invitation</h2>
@@ -543,7 +559,8 @@ export function WorkspaceConsole() {
             )}
             {tab === "Inbox" && member.role !== "analyst" && (
               <InboxView
-                key={workspace._id + queue}
+                key={workspace._id + queue + voiceTicket}
+                initialTicketId={voiceTicket}
                 initialQueue={queue}
                 workspace={workspace}
                 member={member}
@@ -667,12 +684,14 @@ export function WorkspaceConsole() {
 }
 type Run = (action: () => Promise<void>, success?: string) => Promise<void>;
 function InboxView({
+  initialTicketId = "",
   initialQueue = "",
   workspace,
   member,
   run,
   busy,
 }: {
+  initialTicketId?: string;
   initialQueue?: string;
   workspace: Workspace;
   member: Member;
@@ -681,7 +700,7 @@ function InboxView({
 }) {
   const base = `/workspaces/${workspace._id}`;
   const [tickets, setTickets] = useState<Ticket[]>([]),
-    [selected, setSelected] = useState(""),
+    [selected, setSelected] = useState(initialTicketId),
     [ticket, setTicket] = useState<Ticket | null>(null),
     [messages, setMessages] = useState<Message[]>([]),
     [members, setMembers] = useState<Member[]>([]),
@@ -1502,6 +1521,7 @@ function InboxView({
                 </div>
                 {staff && (
                   <TicketChannelActions
+                    key={selected}
                     base={base}
                     ticketId={selected}
                     channel={ticket.channel}

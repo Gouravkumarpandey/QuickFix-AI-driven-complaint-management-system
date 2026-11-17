@@ -49,6 +49,7 @@ export async function workspaceAccess(req, res, next) {
       const area =
         {
           tickets: "tickets",
+          voice: "tickets",
           contacts: "contacts",
           articles: "knowledge",
           resources: "tools",
