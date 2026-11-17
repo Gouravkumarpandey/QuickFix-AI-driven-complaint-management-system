@@ -38,6 +38,7 @@ export default function Softphone({
   const call = () =>
     run(async () => {
       setBusy(true);
+      setMuted(false);
       try {
         device.current?.destroy();
         const { data } = await api.post(

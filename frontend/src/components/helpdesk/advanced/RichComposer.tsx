@@ -35,7 +35,7 @@ export default function RichComposer({
   return (
     <div className="rounded-lg border bg-white overflow-hidden">
       <div
-        className="flex gap-1 p-2 border-b bg-slate-50"
+        className="flex flex-wrap gap-1 p-2 border-b bg-slate-50"
         role="toolbar"
         aria-label="Reply formatting"
       >

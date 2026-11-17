@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Inbox,
   Search,
@@ -57,22 +57,37 @@ export default function TicketTable({
     ...(channel ? { channel } : {}),
     ...(mine ? { mine: true } : {}),
   };
+  const requestNumber = useRef(0);
+  const currentParams = useRef(params);
+  currentParams.current = params;
   const load = async () => {
-    const { data } = await api.get(base + "/tickets", { params });
-    setRows(data.tickets);
-    setTotal(data.total);
+    const request = ++requestNumber.current;
+    const query = currentParams.current;
+    setBusy(true);
     setSelected([]);
-    if (page > 1 && !data.tickets.length) setPage(page - 1);
+    try {
+      const { data } = await api.get(base + "/tickets", { params: query });
+      if (request !== requestNumber.current) return;
+      setRows(data.tickets);
+      setTotal(data.total);
+      if (query.page > 1 && !data.tickets.length)
+        setPage(Math.max(1, Math.ceil(data.total / 30)));
+    } finally {
+      if (request === requestNumber.current) setBusy(false);
+    }
   };
   useEffect(() => {
+    const request = ++requestNumber.current;
     const controller = new AbortController();
     setBusy(true);
+    setSelected([]);
     api
       .get(base + "/tickets", { params, signal: controller.signal })
       .then(({ data }) => {
+        if (controller.signal.aborted || request !== requestNumber.current)
+          return;
         setRows(data.tickets);
         setTotal(data.total);
-        setSelected([]);
       })
       .catch((e) => {
         if (!controller.signal.aborted)
@@ -81,16 +96,21 @@ export default function TicketTable({
           });
       })
       .finally(() => {
-        if (!controller.signal.aborted) setBusy(false);
+        if (!controller.signal.aborted && request === requestNumber.current)
+          setBusy(false);
       });
     return () => controller.abort();
   }, [base, page, search, status, priority, channel, mine]);
   const change = (fn: () => void) => {
+    setSelected([]);
     fn();
     setPage(1);
   };
   return (
-    <section className="bg-white border rounded-2xl overflow-hidden">
+    <section
+      aria-busy={busy}
+      className="bg-white border rounded-2xl overflow-hidden"
+    >
       <div className="p-5 border-b flex flex-wrap justify-between items-center gap-3">
         <div>
           <h2 className="text-xl font-semibold flex gap-2 items-center">
@@ -101,7 +121,11 @@ export default function TicketTable({
             {total} matching conversations
           </p>
         </div>
-        <button className={control} onClick={() => void run(load)}>
+        <button
+          disabled={busy}
+          className={control}
+          onClick={() => void run(load)}
+        >
           Refresh queue
         </button>
       </div>
@@ -230,6 +254,7 @@ export default function TicketTable({
                 <input
                   type="checkbox"
                   aria-label="Select all page tickets"
+                  disabled={busy}
                   checked={!!rows.length && selected.length === rows.length}
                   onChange={(e) =>
                     setSelected(e.target.checked ? rows.map((r) => r._id) : [])
@@ -258,6 +283,7 @@ export default function TicketTable({
                   <input
                     type="checkbox"
                     aria-label={"Select " + r.number}
+                    disabled={busy}
                     checked={selected.includes(r._id)}
                     onChange={(e) =>
                       setSelected((v) =>
@@ -270,6 +296,7 @@ export default function TicketTable({
                 </td>
                 <td className="p-4 max-w-xs">
                   <button
+                    disabled={busy}
                     className="font-medium text-blue-700 text-left"
                     onClick={() => onOpen(r._id)}
                   >
